@@ -1,0 +1,129 @@
+# OS junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Editors / IDE
+.vscode/
+.idea/
+.cursor/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.py,cover
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+.venv-ai/
+ai/.venv-ai/
+venv/
+env/
+ENV/
+
+# Packaging
+*.egg-info/
+pip-wheel-metadata/
+Pipfile.lock
+poetry.lock
+
+# Node / frontend
+node_modules/
+dist/
+build/
+coverage/
+.npmrc
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.parcel-cache/
+.turbo/
+.vite/
+.next/
+
+# Environment files
+.env
+.env.*
+!.env.example
+!ai/.env.example
+
+# Logs
+*.log
+logs/
+ai/topic_ai_service.log
+
+# Runtime / DB
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+instance/
+backend/instance/
+*.sql 
+elevate_backup.sql
+elevate_data_only.sql
+elevate_ordered.sql
+
+# AI runtime artifacts
+ai/models_cache/
+ai/fine_tune/output/
+ai/fine_tune/checkpoints/
+ai/fine_tune/runs/
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.h5
+*.keras
+*.tflite
+*.safetensors
+
+# Generated backend/model-training artifacts
+backend/models/
+backend/data/ml/interaction_datasets/
+scripts/backend/ai_models/
+scripts/frontend/js/emotion_tfjs/
+backend/ai_models/*
+frontend/js/emotion_tfjs/*
+
+# Keep deployable emotion model artifacts tracked (Render/Web runtime)
+!backend/ai_models/emotion_model.h5
+!backend/ai_models/emotion_model.keras
+!backend/ai_models/emotion_model_info.json
+!frontend/js/emotion_tfjs/model.json
+!frontend/js/emotion_tfjs/group1-shard1of1.bin
+
+# Archived/experimental snapshots not needed in primary repo history
+backend/unnecessary/
+frontend/unnecessary/
+
+# Large local datasets / training dumps
+dataset/
+Massive_Emotion_Dataset/
+Bored_vs_Focused_Training_Data/
+
+# Nested repo metadata if present
+ai/.git/
+
+# Keep seeds/tests tracked
+!seed_users.py
+!backend/seed_questions.py
+!backend/test/
+!backend/tests/
+
+# Local one-off files
+Image 3.png
+folder_structure.txt

@@ -1,0 +1,64 @@
+services:
+  - type: web
+    name: elevate-backend
+    runtime: python
+    plan: free
+    rootDir: .
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    preDeployCommand: python scripts/render_predeploy.py
+    startCommand: python -m backend.app
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_POOLER_CONNECTION_STRING
+        sync: false
+      - key: SUPABASE_DIRECT_CONNECTION_STRING
+        sync: false
+      - key: SUPABASE_DB_PASSWORD
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: AI_TOPIC_SERVICE_URL
+        sync: false
+      - key: AI_TOPIC_SERVICE_TOKEN
+        sync: false
+      - key: AI_TOPIC_SERVICE_AUTH_SCHEME
+        value: "Bearer"
+      - key: HF_TOKEN
+        sync: false
+      - key: AI_TOPIC_SERVICE_TIMEOUT_SECONDS
+        value: "45"
+      - key: HF_ML_TRAINING_SERVICE_URL
+        sync: false
+      - key: HF_ML_TRAINING_SERVICE_TOKEN
+        sync: false
+      - key: HF_ML_TRAINING_GITHUB_REPO_URL
+        sync: false
+      - key: HF_ML_TRAINING_GITHUB_REF
+        value: "main"
+      - key: HF_ML_MIN_EMOTION_ACCURACY
+        value: "0.90"
+      - key: HF_ML_TRAINING_PROCESSES
+        value: "4"
+      - key: HF_ML_TRAINING_POLL_SECONDS
+        value: "20"
+
+  - type: static
+    name: elevate-frontend
+    rootDir: .
+    buildCommand: python scripts/render_frontend_build.py
+    staticPublishPath: frontend
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: FRONTEND_API_BASE_URL
+        sync: false

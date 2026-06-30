@@ -1,0 +1,11 @@
+/* Main Stylesheet - Imports all modular CSS files */
+@import url('variables.css');
+@import url('reset.css');
+@import url('layout.css');
+@import url('components.css');
+@import url('auth.css');
+@import url('dashboard.css');
+@import url('learning.css');
+@import url('reports.css');
+@import url('profile.css');
+@import url('responsive.css');

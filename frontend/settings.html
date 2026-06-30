@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Elevate - Settings</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <link rel="stylesheet" href="css/styles.css" />
+  </head>
+  <body>
+    <div class="dashboard">
+      <!-- Navigation Bar -->
+      <nav class="navbar navbar-expand-lg">
+        <div class="container-fluid">
+          <a class="navbar-brand" href="dashboard.html">
+            <i class="fas fa-graduation-cap me-2"></i>Elevate
+          </a>
+          <div class="user-info">
+            <span id="userName">Student</span>
+            <div class="profile-menu">
+              <button class="profile-menu-toggle" id="profileMenuToggle" type="button" aria-label="Open profile menu" aria-expanded="false">
+                <div class="user-avatar" id="userAvatar" title="Profile">S</div>
+                <i class="fas fa-chevron-down profile-menu-caret"></i>
+              </button>
+              <div class="profile-menu-dropdown" id="profileMenuDropdown">
+                <a class="profile-menu-item" href="settings.html">
+                  <i class="fas fa-cog"></i> Settings
+                </a>
+                <button class="profile-menu-item profile-menu-logout" id="logoutBtn" type="button">
+                  <i class="fas fa-sign-out-alt"></i> Logout
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <!-- Main Content -->
+      <div class="main-content">
+        <!-- Sidebar -->
+        <div class="sidebar">
+          <ul class="nav flex-column">
+            <li class="nav-item">
+              <a class="nav-link" href="dashboard.html">
+                <i class="fas fa-chart-line"></i> Progress
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="learning.html">
+                <i class="fas fa-book-reader"></i> Learning
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="reports.html">
+                <i class="fas fa-file-alt"></i> Reports
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link active" href="settings.html">
+                <i class="fas fa-cog"></i> Settings
+              </a>
+            </li>
+          </ul>
+        </div>
+
+        <div class="content-area settings-page">
+          <div class="settings-page-header mb-4">
+            <h2 class="mb-0">Settings</h2>
+            <p class="settings-page-subtitle mb-0">Customize your learning experience, practice-mode camera behavior, and notifications.</p>
+          </div>
+          
+          <!-- Profile Section -->
+          <div class="card mb-4 settings-card settings-card-profile">
+            <div class="card-header settings-card-header">
+              <h5 class="mb-0"><i class="fas fa-user"></i> Profile Information</h5>
+            </div>
+            <div class="card-body settings-card-body">
+              <div class="row">
+                <div class="col-md-6">
+                  <div class="mb-3 settings-profile-field">
+                    <label class="form-label fw-bold">Name</label>
+                    <p class="text-muted" id="profileName">Loading...</p>
+                  </div>
+                  <div class="mb-3 settings-profile-field">
+                    <label class="form-label fw-bold">Email</label>
+                    <p class="text-muted" id="profileEmail">Loading...</p>
+                  </div>
+                </div>
+                <div class="col-md-6">
+                  <div class="mb-3 settings-profile-field">
+                    <label class="form-label fw-bold">Grade Level</label>
+                    <p class="text-muted" id="profileGrade">Loading...</p>
+                  </div>
+                  <div class="mb-3 settings-profile-field">
+                    <label class="form-label fw-bold">Member Since</label>
+                    <p class="text-muted" id="profileJoined">Loading...</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div class="row">
+            <div class="col-12">
+              <h4 class="mb-3 settings-preferences-title">Preferences</h4>
+                <!-- Question Timer Settings -->
+                <div class="card mb-4 settings-card settings-card-timer">
+                  <div class="card-header settings-card-header">
+                    <h5 class="mb-0"><i class="fas fa-clock"></i> Question Timer</h5>
+                  </div>
+                  <div class="card-body settings-card-body">
+                    <div class="mb-3">
+                      <label class="form-label d-flex align-items-center">
+                        <input type="checkbox" class="form-check-input me-2" id="enableTimerCheckbox">
+                        <span>Enable question timer</span>
+                      </label>
+                      <small class="text-muted d-block mt-1">Add time limit to each question for focused practice</small>
+                    </div>
+                    
+                    <div class="mb-3" id="timerDurationSetting">
+                      <label for="timerDuration" class="form-label">Time per question (seconds)</label>
+                      <div class="d-flex align-items-center gap-3">
+                        <input type="range" class="form-range flex-grow-1" id="timerDuration" min="10" max="300" step="10" value="60">
+                        <span class="badge bg-primary" id="timerDurationDisplay">60s</span>
+                      </div>
+                      <small class="text-muted">Recommended: 30-60 seconds for focused learning</small>
+                    </div>
+                    
+                    <div class="mb-3">
+                      <label class="form-label d-flex align-items-center">
+                        <input type="checkbox" class="form-check-input me-2" id="autoSubmitCheckbox">
+                        <span>Auto-submit when time runs out</span>
+                      </label>
+                      <small class="text-muted d-block mt-1">Automatically submit answer when timer reaches zero</small>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Learning Preferences -->
+                <div class="card mb-4 settings-card settings-card-learning">
+                  <div class="card-header settings-card-header">
+                    <h5 class="mb-0"><i class="fas fa-brain"></i> Learning Preferences</h5>
+                  </div>
+                  <div class="card-body settings-card-body">
+                    <div class="mb-3">
+                      <label for="defaultDifficulty" class="form-label">Default Difficulty Level</label>
+                      <select class="form-select" id="defaultDifficulty">
+                        <option value="adaptive">Adaptive (Recommended)</option>
+                        <option value="easy">Easy</option>
+                        <option value="medium">Medium</option>
+                        <option value="hard">Hard</option>
+                      </select>
+                      <small class="text-muted">Adaptive difficulty adjusts based on your performance</small>
+                    </div>
+                    
+                    <div class="mb-3">
+                      <label for="questionsPerSession" class="form-label">Questions per session</label>
+                      <input type="number" class="form-control" id="questionsPerSession" min="5" max="50" value="10">
+                      <small class="text-muted">Number of questions to load in each learning session</small>
+                    </div>
+                    
+                    <div class="mb-3">
+                      <label class="form-label d-flex align-items-center">
+                        <input type="checkbox" class="form-check-input me-2" id="showExplanations" checked>
+                        <span>Show answer explanations</span>
+                      </label>
+                      <small class="text-muted d-block mt-1">Display detailed explanations after answering</small>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Camera & Emotion Detection -->
+                <div class="card mb-4 settings-card settings-card-camera">
+                  <div class="card-header settings-card-header">
+                    <h5 class="mb-0"><i class="fas fa-video"></i> Camera & Emotion Detection</h5>
+                  </div>
+                  <div class="card-body settings-card-body">
+                    <div class="mb-3">
+                      <label class="form-label d-flex align-items-center">
+                        <input type="checkbox" class="form-check-input me-2" id="requireCamera" checked>
+                        <span>Require camera for practice mode</span>
+                      </label>
+                      <small class="text-muted d-block mt-1">Applies only to Practice Questions. Assigned tests always enforce camera and emotion tracking.</small>
+                      <small class="text-muted d-block mt-1" id="cameraRequirementHint"></small>
+                    </div>
+                    
+                    <div class="mb-3">
+                      <label class="form-label d-flex align-items-center">
+                        <input type="checkbox" class="form-check-input me-2" id="enableEmotionFeedback" checked>
+                        <span>Enable emotion-based feedback</span>
+                      </label>
+                      <small class="text-muted d-block mt-1">Receive feedback based on detected emotions</small>
+                    </div>
+                    
+                    <div class="mb-3">
+                      <label for="detectionFrequency" class="form-label">Emotion detection frequency</label>
+                      <select class="form-select" id="detectionFrequency">
+                        <option value="high">High (Every 2 seconds)</option>
+                        <option value="medium" selected>Medium (Every 5 seconds)</option>
+                        <option value="low">Low (Every 10 seconds)</option>
+                      </select>
+                      <small class="text-muted">Higher frequency provides more accurate emotion tracking but uses more resources</small>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Notifications -->
+                <div class="card mb-4 settings-card settings-card-notify">
+                  <div class="card-header settings-card-header">
+                    <h5 class="mb-0"><i class="fas fa-bell"></i> Notifications</h5>
+                  </div>
+                  <div class="card-body settings-card-body">
+                    <div class="mb-3">
+                      <label class="form-label d-flex align-items-center">
+                        <input type="checkbox" class="form-check-input me-2" id="enableNotifications" checked>
+                        <span>Enable notifications</span>
+                      </label>
+                      <small class="text-muted d-block mt-1">Show toast notifications for actions and events</small>
+                    </div>
+                    
+                    <div class="mb-3">
+                      <label class="form-label d-flex align-items-center">
+                        <input type="checkbox" class="form-check-input me-2" id="enableSoundEffects">
+                        <span>Enable sound effects</span>
+                      </label>
+                      <small class="text-muted d-block mt-1">Play sounds for correct/incorrect answers</small>
+                      <button class="btn btn-sm btn-outline-primary mt-2" id="testSoundBtn">
+                        <i class="fas fa-volume-up"></i> Test Sound
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Save Button -->
+                <div class="d-flex justify-content-end gap-3 mt-4 settings-footer-actions">
+                  <button class="btn btn-outline-secondary" id="resetSettingsBtn">
+                    <i class="fas fa-undo"></i> Reset to Defaults
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div class="emotion-feedback" id="emotionFeedback">
+      <span class="emotion-feedback-icon" id="feedbackIcon">ℹ️</span>
+      <div class="emotion-feedback-text" id="feedbackText">Notification</div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

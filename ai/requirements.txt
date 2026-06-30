@@ -1,0 +1,9 @@
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+python-dotenv>=1.0
+requests>=2.31
+accelerate>=0.27.0
+huggingface_hub
+pydantic==2.5.2
+llama-cpp-python==0.2.77
+huggingface-hub==0.23.2

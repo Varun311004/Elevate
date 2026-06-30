@@ -1,0 +1,727 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Elevate — Admin Control Center</title>
+  <meta name="description" content="Elevate Admin Control Center — manage users, schools, ML training, model versions, MCQ observability, and audit trails." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <link rel="stylesheet" href="css/admin.css" />
+</head>
+<body>
+  <!-- Sidebar Navigation -->
+  <aside class="admin-sidebar" id="adminSidebar">
+    <div class="sidebar-brand">
+      <div class="sidebar-logo">
+        <i class="fas fa-graduation-cap"></i>
+      </div>
+      <span class="sidebar-brand-text">Elevate</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">Overview</div>
+      <a href="#" class="nav-item active" data-panel="dashboard" id="nav-dashboard">
+        <i class="fas fa-chart-line nav-icon"></i>
+        <span>Dashboard</span>
+      </a>
+
+      <div class="nav-section-label">Management</div>
+      <a href="#" class="nav-item" data-panel="users" id="nav-users">
+        <i class="fas fa-users nav-icon"></i>
+        <span>Users</span>
+      </a>
+      <a href="#" class="nav-item" data-panel="test-results" id="nav-test-results">
+        <i class="fas fa-file-alt nav-icon"></i>
+        <span>Test Results</span>
+      </a>
+
+      <div class="nav-section-label">AI & Training</div>
+      <a href="#" class="nav-item" data-panel="training" id="nav-training">
+        <i class="fas fa-brain nav-icon"></i>
+        <span>Training Jobs</span>
+      </a>
+      <a href="#" class="nav-item" data-panel="model-registry" id="nav-model-registry">
+        <i class="fas fa-cubes nav-icon"></i>
+        <span>Model Registry</span>
+      </a>
+      <a href="#" class="nav-item" data-panel="mcq-obs" id="nav-mcq-obs">
+        <i class="fas fa-eye nav-icon"></i>
+        <span>MCQ Observability</span>
+      </a>
+
+      <div class="nav-section-label">Governance</div>
+      <a href="#" class="nav-item" data-panel="audit" id="nav-audit">
+        <i class="fas fa-shield-alt nav-icon"></i>
+        <span>Audit Trail</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="sidebar-user" id="sidebarUser">
+        <div class="sidebar-user-avatar" id="sidebarAvatar">A</div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-name" id="sidebarUserName">Admin</div>
+          <div class="sidebar-user-role">Administrator</div>
+        </div>
+      </div>
+      <button class="sidebar-logout-btn" id="sidebarLogoutBtn" title="Logout">
+        <i class="fas fa-sign-out-alt"></i>
+      </button>
+    </div>
+  </aside>
+
+  <!-- Mobile sidebar toggle -->
+  <button class="sidebar-mobile-toggle" id="sidebarToggle" aria-label="Open sidebar">
+    <i class="fas fa-bars"></i>
+  </button>
+
+  <!-- Main content area -->
+  <div class="admin-main" id="adminMain">
+
+    <!-- Top bar -->
+    <header class="admin-topbar">
+      <div class="topbar-left">
+        <h1 class="topbar-title" id="topbarTitle">Dashboard</h1>
+        <div class="server-status-chip" id="serverStatusChip">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="serverStatusText">Checking...</span>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button class="topbar-btn" id="healthRetryBtn" title="Retry health check">
+          <i class="fas fa-sync-alt"></i>
+        </button>
+        
+        <div class="profile-menu" id="profile-menu-container">
+          <button class="profile-btn" id="profile-btn">
+            <div class="profile-info">
+              <span class="profile-name" id="topbarUserName">Admin</span>
+              <span class="profile-role">Administrator</span>
+            </div>
+            <div class="profile-avatar" id="topbarAvatar">A</div>
+            <i class="fas fa-chevron-down profile-chevron"></i>
+          </button>
+          
+          <div class="dropdown-menu hidden" id="profile-dropdown">
+            <button id="topbarLogoutBtn" class="dropdown-item text-danger">
+              <i class="fas fa-sign-out-alt"></i> Log Out
+            </button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ============ PANEL: DASHBOARD ============ -->
+    <section class="admin-panel active" id="panel-dashboard">
+      <div class="panel-header">
+        <h2 class="panel-title">System Overview</h2>
+        <button class="btn btn-primary btn-sm" id="refreshStatsBtn">
+          <i class="fas fa-sync-alt"></i> Refresh
+        </button>
+      </div>
+
+      <div class="stats-grid" id="statsGrid">
+        <div class="stat-card" id="statUsers">
+          <div class="stat-icon"><i class="fas fa-users"></i></div>
+          <div class="stat-body">
+            <div class="stat-value" id="statUsersVal">—</div>
+            <div class="stat-label">Total Users</div>
+          </div>
+        </div>
+        <div class="stat-card" id="statQuestions">
+          <div class="stat-icon accent-purple"><i class="fas fa-question-circle"></i></div>
+          <div class="stat-body">
+            <div class="stat-value" id="statQuestionsVal">—</div>
+            <div class="stat-label">Questions</div>
+          </div>
+        </div>
+        <div class="stat-card" id="statEmotions">
+          <div class="stat-icon accent-green"><i class="fas fa-smile"></i></div>
+          <div class="stat-body">
+            <div class="stat-value" id="statEmotionsVal">—</div>
+            <div class="stat-label">Emotion Logs</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row-2col">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">Quick Actions</h3>
+          </div>
+          <div class="quick-actions-grid">
+            <button class="quick-action-btn" id="qaUserManagement">
+              <i class="fas fa-users"></i>
+              <span>Users</span>
+            </button>
+            <button class="quick-action-btn" id="qaTestResults">
+              <i class="fas fa-file-alt"></i>
+              <span>Test Results</span>
+            </button>
+            <button class="quick-action-btn" id="qaTriggerTraining">
+              <i class="fas fa-play-circle"></i>
+              <span>Trigger Training</span>
+            </button>
+            <button class="quick-action-btn" id="qaAuditLogs">
+              <i class="fas fa-shield-alt"></i>
+              <span>Audit Logs</span>
+            </button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">Server Info</h3>
+          </div>
+          <pre class="info-pre" id="serverInfoPre">Loading...</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PANEL: USERS ============ -->
+    <section id="panel-users" class="admin-panel">
+      <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+        <h2>User Management</h2>
+        <button class="btn btn-primary" id="openImportModalBtn">
+          <i class="fas fa-user-plus"></i> Add / Import Users
+        </button>
+      </div>
+
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3>My Admin Profile</h3>
+        </div>
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="adminProfileBody">
+            </tbody>
+        </table>
+      </div>
+
+      <div class="panel-toolbar card">
+        <div class="toolbar-left">
+          <div class="search-box">
+            <i class="fas fa-search"></i>
+            <input type="text" id="userSearch" placeholder="Search by name or email..." />
+          </div>
+        </div>
+        <div class="toolbar-right">
+          <select id="userRoleFilter" class="filter-select">
+            <option value="">All Roles</option>
+            <option value="teacher">Teachers</option>
+            <option value="student">Students</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="card table-card">
+        <div class="card-header">
+          <h3>Teachers & Students</h3>
+        </div>
+        <table class="admin-table" id="usersTable">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Role</th>
+              <th>Grade</th>
+              <th>School</th>
+              <th>Status</th>
+              <th class="text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="usersTableBody">
+            <tr><td colspan="6" class="table-empty"><div class="spinner"></div> Loading users...</td></tr>
+          </tbody>
+        </table>
+        <div class="pagination-bar" id="usersPagination"></div>
+      </div>
+    </section>
+
+    <!-- ============ PANEL: SCHOOLS ============ -->
+    <section class="admin-panel" id="panel-schools">
+      <div class="panel-header">
+        <h2 class="panel-title">School Hierarchy</h2>
+        <div class="panel-header-actions">
+          <button class="btn btn-secondary btn-sm" id="toggleSchoolViewBtn">
+            <i class="fas fa-sitemap"></i> Hierarchy View
+          </button>
+          <button class="btn btn-primary btn-sm" id="addSchoolBtn">
+            <i class="fas fa-plus"></i> Add School
+          </button>
+        </div>
+      </div>
+
+      <div class="school-list-view" id="schoolListView">
+        <div class="card table-card">
+          <table class="admin-table" id="schoolsTable">
+            <thead>
+              <tr><th>ID</th><th>Name</th><th>Slug</th><th>Teachers</th><th>Students</th><th>Created</th><th>Actions</th></tr>
+            </thead>
+            <tbody id="schoolsTableBody">
+              <tr><td colspan="7" class="table-empty">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="school-hierarchy-view hidden" id="schoolHierarchyView">
+        <div id="hierarchyTreeContainer" class="hierarchy-tree-container">
+          <div class="table-empty">Loading hierarchy...</div>
+        </div>
+      </div>
+
+      <!-- Add school modal -->
+      <div class="modal-overlay hidden" id="addSchoolModal">
+        <div class="modal-box">
+          <div class="modal-header">
+            <h3>Add New School</h3>
+            <button class="modal-close" id="addSchoolModalClose"><i class="fas fa-times"></i></button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>School Name</label>
+              <input id="newSchoolName" class="filter-input w-full" placeholder="e.g. Springfield High">
+            </div>
+            <div class="form-group">
+              <label for="newSchoolSlug">School Slug <span class="text-muted">used in URLs</span></label>
+              <input type="text" id="newSchoolSlug" class="filter-input w-full" placeholder="e.g. springfield-high">
+              <small class="form-hint">Lowercase letters, numbers and hyphens only. Auto-generated if left blank.</small>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" id="addSchoolCancel">Cancel</button>
+            <button class="btn btn-primary" id="addSchoolSave">Create School</button>
+          </div>
+          <div class="modal-feedback" id="addSchoolFeedback"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PANEL: TEST RESULTS ============ -->
+    <section class="admin-panel" id="panel-test-results">
+      <div class="panel-header">
+        <h2 class="panel-title">Test Results</h2>
+        <div class="panel-header-actions">
+          <button class="btn btn-secondary btn-sm" id="exportResultsCsvBtn">
+            <i class="fas fa-download"></i> CSV
+          </button>
+        </div>
+      </div>
+
+      <div class="filter-bar card">
+        <div class="filter-row">
+          <input class="filter-input" id="resultsSubjectFilter" placeholder="Subject (e.g. Math)" />
+          <input class="filter-input" id="resultsEmailFilter" placeholder="Student email" />
+          <select class="filter-select" id="resultsStatusFilter">
+            <option value="">All Statuses</option>
+            <option value="completed">Completed</option>
+            <option value="in_progress">In Progress</option>
+            <option value="abandoned">Abandoned</option>
+            <option value="expired">Expired</option>
+          </select>
+          <select class="filter-select" id="resultsSchoolFilter">
+            <option value="">All Schools</option>
+          </select>
+          <input class="filter-input" type="date" id="resultsDateFrom" title="Date from" />
+          <input class="filter-input" type="date" id="resultsDateTo" title="Date to" />
+          <input class="filter-input" type="number" id="resultsMinScore" placeholder="Min %" min="0" max="100" style="width:80px" />
+          <input class="filter-input" type="number" id="resultsMaxScore" placeholder="Max %" min="0" max="100" style="width:80px" />
+          <button class="btn btn-primary" id="resultsSearchBtn">
+            <i class="fas fa-search"></i> Search
+          </button>
+        </div>
+      </div>
+
+      <div class="card table-card">
+        <table class="admin-table" id="resultsTable">
+          <thead>
+            <tr><th>ID</th><th>Student</th><th>Subject</th><th>Score</th><th>Questions</th><th>Avg Time</th><th>Status</th><th>Date</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="resultsTableBody">
+            <tr><td colspan="9" class="table-empty">Use filters to search results.</td></tr>
+          </tbody>
+        </table>
+        <div class="pagination-bar" id="resultsPagination"></div>
+      </div>
+
+      <!-- Test detail modal -->
+      <div class="modal-overlay hidden" id="testDetailModal">
+        <div class="modal-box modal-box-lg">
+          <div class="modal-header">
+            <h3 id="testDetailModalTitle">Test Detail</h3>
+            <button class="modal-close" id="testDetailModalClose"><i class="fas fa-times"></i></button>
+          </div>
+          <div class="modal-body" id="testDetailModalBody">Loading...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PANEL: TRAINING JOBS ============ -->
+    <section class="admin-panel" id="panel-training">
+      <div class="panel-header">
+        <h2 class="panel-title">Training Jobs</h2>
+        <div class="panel-header-actions">
+          <button class="btn btn-secondary btn-sm" id="refreshJobsBtn">
+            <i class="fas fa-sync-alt"></i> Refresh
+          </button>
+          <button class="btn btn-primary btn-sm" id="triggerTrainingBtn">
+            <i class="fas fa-play-circle"></i> Trigger Training
+          </button>
+        </div>
+      </div>
+
+      <div class="filter-bar card">
+        <select class="filter-select" id="jobStatusFilter">
+          <option value="">All Statuses</option>
+          <option value="pending">Pending</option>
+          <option value="running">Running</option>
+          <option value="succeeded">Succeeded</option>
+          <option value="failed">Failed</option>
+        </select>
+      </div>
+
+      <div class="card table-card">
+        <table class="admin-table" id="jobsTable">
+          <thead>
+            <tr><th>ID</th><th>Job ID</th><th>Status</th><th>Source</th><th>Triggered By</th><th>Duration</th><th>Started</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="jobsTableBody">
+            <tr><td colspan="8" class="table-empty">Loading jobs...</td></tr>
+          </tbody>
+        </table>
+        <div class="pagination-bar" id="jobsPagination"></div>
+      </div>
+
+      <!-- Job detail modal -->
+      <div class="modal-overlay hidden" id="jobDetailModal">
+        <div class="modal-box modal-box-lg">
+          <div class="modal-header">
+            <h3 id="jobDetailModalTitle">Job Detail</h3>
+            <button class="modal-close" id="jobDetailModalClose"><i class="fas fa-times"></i></button>
+          </div>
+          <div class="modal-body" id="jobDetailModalBody">Loading...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PANEL: MODEL REGISTRY ============ -->
+    <section class="admin-panel" id="panel-model-registry">
+      <div class="panel-header">
+        <h2 class="panel-title">Model Version Registry</h2>
+        <button class="btn btn-primary btn-sm" id="registerVersionBtn">
+          <i class="fas fa-plus"></i> Register Version
+        </button>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Current Production, Previous, Rollback Target</h3>
+        </div>
+        <div id="modelRegistrySummaryBody" class="model-summary-list">
+          <div class="table-empty">Loading registry summary...</div>
+        </div>
+      </div>
+
+      <div class="card table-card">
+        <table class="admin-table" id="versionsTable">
+          <thead>
+            <tr><th>ID</th><th>Model</th><th>Tag</th><th>Production</th><th>Rollback Target</th><th>Metrics</th><th>Created</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="versionsTableBody">
+            <tr><td colspan="8" class="table-empty">Loading model versions...</td></tr>
+          </tbody>
+        </table>
+        <div class="pagination-bar" id="versionsPagination"></div>
+      </div>
+
+      <!-- Register version modal -->
+      <div class="modal-overlay hidden" id="registerVersionModal">
+        <div class="modal-box">
+          <div class="modal-header">
+            <h3>Register Model Version</h3>
+            <button class="modal-close" id="registerVersionModalClose"><i class="fas fa-times"></i></button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>Model Name</label>
+              <input id="regModelName" class="filter-input w-full" placeholder="e.g. emotion_classifier" />
+            </div>
+            <div class="form-group">
+              <label>Version Tag</label>
+              <input id="regVersionTag" class="filter-input w-full" placeholder="e.g. v1.2.0" />
+            </div>
+            <div class="form-group">
+              <label>Artifact URI</label>
+              <input id="regArtifactUri" class="filter-input w-full" placeholder="hf://user/model or r2://bucket/path" />
+            </div>
+            <div class="form-group">
+              <label>Training Job ID (optional)</label>
+              <input id="regTrainingJobId" class="filter-input w-full" placeholder="Job ID from training monitor" />
+            </div>
+            <div class="form-group">
+              <label>Notes</label>
+              <input id="regNotes" class="filter-input w-full" placeholder="Optional notes" />
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" id="registerVersionCancel">Cancel</button>
+            <button class="btn btn-primary" id="registerVersionSave">Register</button>
+          </div>
+          <div class="modal-feedback" id="registerVersionFeedback"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PANEL: MCQ OBSERVABILITY ============ -->
+    <section class="admin-panel" id="panel-mcq-obs">
+      <div class="panel-header">
+        <h2 class="panel-title">MCQ Generation Observability</h2>
+        <button class="btn btn-primary btn-sm" id="refreshMcqObsBtn">
+          <i class="fas fa-sync-alt"></i> Refresh
+        </button>
+      </div>
+
+      <div class="filter-bar card">
+        <div class="filter-row">
+          <select class="filter-select" id="mcqObsDays">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+          <input class="filter-input" id="mcqObsSubject" placeholder="Filter by subject" />
+        </div>
+      </div>
+
+      <div class="stats-grid" id="mcqSummaryGrid">
+        <div class="stat-card">
+          <div class="stat-icon"><i class="fas fa-clipboard-list"></i></div>
+          <div class="stat-body">
+            <div class="stat-value" id="mcqTotal">—</div>
+            <div class="stat-label">Total Events</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon accent-green"><i class="fas fa-check-circle"></i></div>
+          <div class="stat-body">
+            <div class="stat-value" id="mcqSuccessRate">—</div>
+            <div class="stat-label">Success Rate</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon accent-pink"><i class="fas fa-times-circle"></i></div>
+          <div class="stat-body">
+            <div class="stat-value" id="mcqFailureRate">—</div>
+            <div class="stat-label">Failure Rate</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon accent-orange"><i class="fas fa-random"></i></div>
+          <div class="stat-body">
+            <div class="stat-value" id="mcqFallbackRate">—</div>
+            <div class="stat-label">Fallback Rate</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon accent-teal"><i class="fas fa-layer-group"></i></div>
+          <div class="stat-body">
+            <div class="stat-value" id="mcqGenerationCounts">—</div>
+            <div class="stat-label">Generated / Requested</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon accent-purple"><i class="fas fa-clock"></i></div>
+          <div class="stat-body">
+            <div class="stat-value" id="mcqAvgLatency">—</div>
+            <div class="stat-label">Avg Latency (ms)</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row-2col">
+        <div class="card">
+          <div class="card-header"><h3 class="card-title">Events Over Time</h3></div>
+          <div class="chart-container">
+            <canvas id="mcqTimeChart" height="200"></canvas>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h3 class="card-title">By Generation Mode</h3></div>
+          <div class="chart-container">
+            <canvas id="mcqModeChart" height="200"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PANEL: AUDIT TRAIL ============ -->
+    <section class="admin-panel" id="panel-audit">
+      <div class="panel-header">
+        <h2 class="panel-title">Admin Audit Trail</h2>
+        <button class="btn btn-secondary btn-sm" id="exportAuditBtn">
+          <i class="fas fa-download"></i> Export CSV
+        </button>
+      </div>
+
+      <div class="filter-bar card">
+        <div class="filter-row">
+          <input class="filter-input" id="auditActionFilter" placeholder="Filter action (e.g. user.disable)" />
+          <select class="filter-select" id="auditTargetType">
+            <option value="">All Target Types</option>
+            <option value="user">User</option>
+            <option value="school">School</option>
+            <option value="training_job">Training Job</option>
+            <option value="model_version">Model Version</option>
+          </select>
+          <input type="date" class="filter-input" id="auditDateFrom" title="From date" />
+          <input type="date" class="filter-input" id="auditDateTo" title="To date" />
+          <button class="btn btn-primary" id="auditSearchBtn">
+            <i class="fas fa-search"></i> Search
+          </button>
+        </div>
+      </div>
+
+      <div class="card table-card">
+        <table class="admin-table" id="auditTable">
+          <thead>
+            <tr><th>ID</th><th>Action</th><th>Actor</th><th>Target</th><th>IP</th><th>Notes</th><th>Time</th></tr>
+          </thead>
+          <tbody id="auditTableBody">
+            <tr><td colspan="7" class="table-empty">Use filters to search audit logs.</td></tr>
+          </tbody>
+        </table>
+        <div class="pagination-bar" id="auditPagination"></div>
+      </div>
+    </section>
+  </div><!-- /admin-main -->
+  
+  <div class="modal-overlay hidden" id="userEditModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Edit User</h3>
+        <button class="btn-close" id="closeUserEditModal"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="editUserId" />
+        
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" id="editUserName" class="form-control" readonly disabled />
+        </div>
+        
+        <div class="form-group">
+          <label>Email</label>
+          <input type="email" id="editUserEmail" class="form-control" readonly disabled />
+        </div>
+
+        <div class="form-group">
+          <label>System Role</label>
+          <select id="editUserRole" class="form-control">
+            <option value="student">Student</option>
+            <option value="teacher">Teacher</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Assigned School</label>
+          <select id="editUserSchool" class="form-control">
+            <option value="">-- Unassigned --</option>
+            </select>
+        </div>
+
+        <button class="btn btn-primary w-full mt-3" id="saveUserEditBtn">Save Changes</button>
+      </div>
+    </div>
+  </div>
+  
+  <div class="modal-overlay hidden" id="importUsersModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Add Users to School</h3>
+        <button class="modal-close" id="closeImportModal"><i class="fas fa-times"></i></button>
+      </div>
+      
+      <div class="modal-tabs">
+        <button class="tab-btn active" id="tabBulkBtn">Bulk CSV Import</button>
+        <button class="tab-btn" id="tabSingleBtn">Add Single User</button>
+      </div>
+
+      <div class="modal-body">
+        <div id="tabBulkContent">
+          <p style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 16px; line-height: 1.5;">
+            Download the format, fill in your institutional data, and upload the CSV to automatically provision accounts.
+          </p>
+          <button class="btn btn-secondary w-full" id="downloadCsvTemplateBtn" style="margin-bottom: 20px;">
+            <i class="fas fa-download"></i> Download CSV Template
+          </button>
+          
+          <div class="form-group">
+            <label>Upload Completed CSV</label>
+            <input type="file" id="csvFileInput" accept=".csv" class="form-control" style="padding: 8px;" />
+          </div>
+          <button class="btn btn-primary w-full" id="uploadCsvBtn" style="margin-top: 8px;">
+            <i class="fas fa-upload"></i> Process Upload
+          </button>
+        </div>
+
+        <div id="tabSingleContent" class="hidden">
+          <p style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 16px; line-height: 1.5;">
+            Search the database. If the user is found, they will be assigned to your school and notified.
+          </p>
+          <div class="form-group">
+            <label>User's Email Address</label>
+            <input type="email" id="singleAddEmail" class="form-control" placeholder="student@example.com" />
+          </div>
+          <div class="form-group">
+            <label>Full Name (For spelling suggestions)</label>
+            <input type="text" id="singleAddName" class="form-control" placeholder="John Doe" />
+          </div>
+          <div class="form-group">
+            <label>Assign Role</label>
+            <select id="singleAddRole" class="form-control">
+              <option value="student">Student</option>
+              <option value="teacher">Teacher</option>
+            </select>
+          </div>
+
+          <div id="singleAddWarning" class="hidden" style="margin-bottom:16px; padding:12px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.2); border-radius:8px; color:#fbbf24; font-size:0.85rem; line-height: 1.4;"></div>
+
+          <button class="btn btn-primary w-full" id="singleAddBtn" style="margin-top: 8px;">
+            <i class="fas fa-user-plus"></i> Add User
+          </button>
+        </div>
+        
+        <div id="importFeedback" class="hidden" style="margin-top: 16px; padding: 12px; border-radius: 8px; text-align: center; font-size: 0.875rem; font-weight: 500;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Global confirm modal -->
+  <div class="modal-overlay hidden" id="confirmModal">
+    <div class="modal-box modal-box-sm">
+      <div class="modal-header">
+        <h3 id="confirmModalTitle">Confirm Action</h3>
+      </div>
+      <div class="modal-body">
+        <p id="confirmModalMessage">Are you sure?</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="confirmModalNo">Cancel</button>
+        <button class="btn btn-danger" id="confirmModalYes">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script type="module" src="js/admin.js"></script>
+</body>
+</html>

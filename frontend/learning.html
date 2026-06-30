@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Elevate - Learning Module</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <link rel="stylesheet" href="css/styles.css" />
+  </head>
+  <body>
+    <div class="dashboard">
+      <!-- Navigation Bar -->
+      <nav class="navbar navbar-expand-lg">
+        <div class="container-fluid">
+          <a class="navbar-brand" href="dashboard.html">
+            <i class="fas fa-graduation-cap me-2"></i>Elevate
+          </a>
+          <div class="user-info">
+            <span id="userName">Student</span>
+            <div class="profile-menu">
+              <button class="profile-menu-toggle" id="profileMenuToggle" type="button" aria-label="Open profile menu" aria-expanded="false">
+                <div class="user-avatar" id="userAvatar" title="Profile">S</div>
+                <i class="fas fa-chevron-down profile-menu-caret"></i>
+              </button>
+              <div class="profile-menu-dropdown" id="profileMenuDropdown">
+                <a class="profile-menu-item" href="settings.html">
+                  <i class="fas fa-cog"></i> Settings
+                </a>
+                <button class="profile-menu-item profile-menu-logout" id="logoutBtn" type="button">
+                  <i class="fas fa-sign-out-alt"></i> Logout
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <!-- Main Content -->
+      <div class="main-content">
+        <!-- Sidebar -->
+        <div class="sidebar">
+          <ul class="nav flex-column">
+            <li class="nav-item">
+              <a class="nav-link" href="dashboard.html">
+                <i class="fas fa-chart-line"></i> Progress
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link active" href="learning.html">
+                <i class="fas fa-book-reader"></i> Learning
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="reports.html">
+                <i class="fas fa-file-alt"></i> Reports
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="settings.html">
+                <i class="fas fa-cog"></i> Settings
+              </a>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Content Area -->
+        <div class="content-area">
+          <h2>STEM Learning Module</h2>
+          
+          <!-- Instructions Alert -->
+          <div class="alert alert-info mb-4" role="alert">
+            <i class="fas fa-info-circle"></i>
+            <strong>Start Learning:</strong> Turn on camera and wait for real face detection points on your face. Grade, STEM subject, and topic controls will unlock automatically.
+          </div>
+
+          <div class="learning-lock-banner locked" id="learningLockBanner">
+            <i class="fas fa-lock"></i> Controls are locked until camera and real face detection are active.
+          </div>
+
+          <!-- <div class="learning-live-status">
+            <div class="status-chip">
+              <span class="chip-label">Detection</span>
+              <span class="status-pill off" id="detectionStateBadge">Waiting for Detection</span>
+            </div>
+            <div class="status-chip">
+              <span class="chip-label">Live Emotion</span>
+              <span class="chip-value" id="liveEmotionState">Neutral</span>
+            </div>
+          </div> -->
+
+          <!-- Emotion Tracker -->
+          <div class="emotion-tracker">
+            <h4>Emotion Detection</h4>
+            <div class="row">
+              <div class="col-md-6">
+                <div class="webcam-container">
+                  <video id="webcam" autoplay muted playsinline></video>
+                  <canvas id="faceCanvas" class="face-detection-overlay"></canvas>
+                  <div class="webcam-placeholder" id="webcamPlaceholder">
+                    <i class="fas fa-video"></i>
+                    <p>Camera not started</p>
+                  </div>
+                  <div class="emotion-indicator" id="emotionIndicator" style="display: none">
+                    <span class="emotion-icon" id="emotionIcon">😊</span>
+                    <span id="emotionText">Neutral</span>
+                  </div>
+                  <div class="camera-status">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="cameraStatusText">Camera Off</span>
+                  </div>
+                </div>
+                <div class="mt-3 text-center">
+                  <button class="btn btn-primary" id="startCamera">
+                    <i class="fas fa-video"></i> Start Camera
+                  </button>
+                  <button
+                    class="btn btn-secondary"
+                    id="stopCamera"
+                    style="display: none"
+                  >
+                    <i class="fas fa-video-slash"></i> Stop Camera
+                  </button>
+                </div>
+                <div class="model-loading-status" id="modelLoadingStatus">
+                  <p id="modelStatusText">Ready to load models...</p>
+                  <button
+                    class="retry-button"
+                    id="retryModelLoad"
+                    style="display: none"
+                  >
+                    Retry
+                  </button>
+                </div>
+              </div>
+              <div class="col-md-6">
+                <div class="subject-performance-widget">
+                  <div class="subject-performance-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                      <h5 style="margin: 0;">Current Performance</h5>
+                      <small style="color: #999; font-size: 0.75rem;">Session Data • Updates in real-time</small>
+                    </div>
+                    <button 
+                      id="refreshPerformanceWidget" 
+                      class="btn btn-sm" 
+                      style="background: none; border: 1px solid #ddd; padding: 5px 10px; cursor: pointer; border-radius: 4px;"
+                      title="Refresh performance data"
+                    >
+                      <i class="fas fa-sync-alt" style="font-size: 0.85rem; color: #666;"></i>
+                    </button>
+                  </div>
+                  <div class="subject-performance-grid" id="subjectPerformanceGrid" style="transition: opacity 0.3s ease-in;">
+                    <!-- Populated by JS -->
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Subject Selection -->
+          <div class="subject-selection mb-4">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <h4 class="mb-0">Select Subject & Grade</h4>
+              <button class="btn btn-primary selection-apply-btn" id="applySelectionBtn" type="button" disabled>
+                <i class="fas fa-check-circle"></i> OK
+              </button>
+            </div>
+            <div class="selection-grid mb-3">
+              <section class="selection-group" style="grid-column: 1 / -1;">
+                <label class="form-label fw-semibold mb-2">
+                  <i class="fas fa-route"></i> Learning Mode
+                </label>
+                <div class="d-flex gap-3 flex-wrap" id="learningModeSelector">
+                  <label class="form-check-label d-flex align-items-center gap-2">
+                    <input class="form-check-input" type="radio" name="learningMode" value="practice" checked>
+                    Practice Questions
+                  </label>
+                  <label class="form-check-label d-flex align-items-center gap-2">
+                    <input class="form-check-input" type="radio" name="learningMode" value="assigned">
+                    Assigned Test
+                  </label>
+                </div>
+                <small class="text-muted">Choose one workflow: practice by STEM topic or complete a teacher-assigned test.</small>
+              </section>
+            </div>
+            <div class="selection-grid mb-3">
+              <section class="selection-group" id="assignedModeSection" style="grid-column: 1 / -1;">
+                <label for="assignedTestSelect" class="form-label fw-semibold mb-2">
+                  <i class="fas fa-user-check"></i> Teacher Assigned Test
+                </label>
+                <div class="d-flex gap-2 flex-wrap">
+                  <select id="assignedTestSelect" class="form-select" style="max-width: 520px;">
+                    <option value="">Select an assigned test</option>
+                  </select>
+                  <button class="btn btn-outline-secondary" id="refreshAssignedTests" type="button">
+                    <i class="fas fa-sync-alt"></i> Refresh Assigned
+                  </button>
+                </div>
+                <small class="text-muted">Assigned mode uses your teacher-provided test questions and submission lifecycle.</small>
+              </section>
+            </div>
+            <div class="selection-grid mb-3" id="practiceModeSection">
+              <section class="selection-group">
+                <label for="gradeSelect" class="form-label fw-semibold mb-2">
+                  <i class="fas fa-graduation-cap"></i> Grade Level
+                </label>
+                <select class="form-select" id="gradeSelect">
+                  <!-- Populated by JS based on user's grade -->
+                </select>
+                <small class="text-muted">You can access your grade level and above</small>
+              </section>
+
+              <section class="selection-group">
+                <label class="form-label fw-semibold mb-2">
+                  <i class="fas fa-atom"></i> STEM Subject
+                </label>
+                <div id="subjectOptions" class="d-flex gap-2 flex-wrap">
+                  <!-- Populated by JS -->
+                </div>
+              </section>
+
+              <section class="selection-group">
+                <label for="topicSelect" class="form-label fw-semibold mb-2">
+                  <i class="fas fa-list"></i> Topic (Syllabus)
+                </label>
+                <select id="topicSelect" class="form-select">
+                  <option value="">All topics</option>
+                </select>
+                <small class="text-muted">Select one topic before pressing OK to load questions</small>
+              </section>
+
+              <section class="selection-group">
+                <label for="difficultySelect" class="form-label fw-semibold mb-2">
+                  <i class="fas fa-layer-group"></i> Practice Difficulty
+                </label>
+                <select id="difficultySelect" class="form-select">
+                  <option value="adaptive" selected>Adaptive (Recommended)</option>
+                  <option value="easy">Easy</option>
+                  <option value="medium">Medium</option>
+                  <option value="hard">Hard</option>
+                </select>
+                <small class="text-muted">Override adaptive mode when you want a fixed challenge level</small>
+              </section>
+
+              <section class="selection-group">
+                <label for="countSelect" class="form-label fw-semibold mb-2">
+                  <i class="fas fa-list-ol"></i> Questions
+                </label>
+                <select id="countSelect" class="form-select">
+                  <option value="5">5</option>
+                  <option value="10" selected>10</option>
+                  <option value="20">20</option>
+                </select>
+              </section>
+            </div>
+          </div>
+
+          <!-- Question Container (appears below camera section) -->
+          <div class="question-container mt-4" id="questionContainer" style="display: none;">
+            <div class="question-header">
+              <div>
+                <span class="badge bg-info" id="questionCategory">Subject</span>
+                <span class="difficulty-badge difficulty-easy" id="difficultyBadge">
+                  Easy
+                </span>
+              </div>
+              <div class="question-timer" id="questionTimer" style="display: none; margin-left: auto;">
+                <i class="fas fa-clock"></i> 
+                <span id="questionTimerDisplay" style="font-weight: 600; font-size: 1.1rem;">0:00</span>
+              </div>
+            </div>
+            <div class="question-text" id="questionText">
+              Loading question...
+            </div>
+            <div class="answer-options" id="answerOptions">
+              <!-- Options populated by JS -->
+            </div>
+            <div class="feedback-message" id="feedbackMessage"></div>
+            <div class="mt-3">
+              <button class="btn btn-primary" id="submitAnswer" style="display: none">
+                Submit Answer
+              </button>
+              <button
+                class="btn btn-success"
+                id="nextQuestion"
+                style="display: none"
+              >
+                Next Question
+              </button>
+              <button class="btn btn-warning" id="finishTest" style="display: none">
+                Finish Test
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Overlay for modals -->
+    <div class="modal-overlay" id="overlay"></div>
+
+    <!-- Break Reminder Modal -->
+    <div class="break-reminder-modal" id="breakReminder">
+      <div class="break-reminder-content">
+        <div class="break-reminder-icon">
+          <i class="fas fa-coffee"></i>
+        </div>
+        <h3>Time for a Break!</h3>
+        <p>You've been working hard. Take a 2-minute break to rest your eyes and mind.</p>
+        <div class="break-timer" id="breakTimer">2:00</div>
+        <div class="break-tips">
+          <p><strong>Quick tips:</strong></p>
+          <ul>
+            <li>Look away from the screen (20-20-20 rule)</li>
+            <li>Stretch your arms and neck</li>
+            <li>Take a few deep breaths</li>
+          </ul>
+        </div>
+        <div class="break-actions">
+          <button class="btn btn-primary" id="skipBreak">
+            <i class="fas fa-forward"></i> Skip & Continue
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Emotion Feedback -->
+    <div class="emotion-feedback" id="emotionFeedback">
+      <span class="emotion-feedback-icon" id="feedbackIcon">😊</span>
+      <div class="emotion-feedback-text" id="feedbackText">You're doing great!</div>
+    </div>
+
+    <!-- Debug Panel -->
+    <div class="debug-panel" id="debugPanel">
+      <div class="debug-line">Camera: <span id="debugCamera">Off</span></div>
+      <div class="debug-line">Stream: <span id="debugStream">None</span></div>
+      <div class="debug-line">Models: <span id="debugModels">Not Loaded</span></div>
+      <div class="debug-line">Detection: <span id="debugDetection">Inactive</span></div>
+      <div class="debug-line">Emotion: <span id="debugEmotion">None</span></div>
+    </div>
+
+    <!-- TensorFlow.js and FaceMesh for emotion detection - MUST load BEFORE main.js -->
+    <!-- <script src="https://unpkg.com/@tensorflow/tfjs-core@2.4.0/dist/tf-core.js"></script>
+    <script src="https://unpkg.com/@tensorflow/tfjs-converter@2.4.0/dist/tf-converter.js"></script>
+    <script src="https://unpkg.com/@tensorflow/tfjs-backend-webgl@2.4.0/dist/tf-backend-webgl.js"></script>
+    <script src="https://unpkg.com/@tensorflow/tfjs-backend-cpu@2.4.0/dist/tf-backend-cpu.js"></script>
+    <script src="https://unpkg.com/@tensorflow-models/face-landmarks-detection@0.0.1/dist/face-landmarks-detection.js"></script> -->
+    
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@2.4.0/dist/tf.min.js"></script>
+
+    <script src="https://unpkg.com/@tensorflow-models/face-landmarks-detection@0.0.1/dist/face-landmarks-detection.js"></script>
+
+    <!-- Main application - loads AFTER TensorFlow.js -->
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

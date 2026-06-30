@@ -1,0 +1,21 @@
+/* CSS Custom Properties */
+:root {
+  --primary-color: #4a6cf7;
+  --secondary-color: #6c63ff;
+  --success-color: #28a745;
+  --danger-color: #dc3545;
+  --warning-color: #ffc107;
+  --info-color: #17a2b8;
+  --light-color: #f8f9fa;
+  --dark-color: #343a40;
+  --gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+
+  --dropdown-bg: #ffffff;
+  --dropdown-border: #d5deec;
+  --dropdown-text: #1f3553;
+  --dropdown-radius: 10px;
+  --dropdown-height: 44px;
+  --dropdown-focus-border: #4a6cf7;
+  --dropdown-focus-ring: 0 0 0 3px rgba(74, 108, 247, 0.14);
+  --dropdown-arrow: #607694;
+}

@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Elevate - Welcome</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body class="auth-body">
+    <!-- Notification Feedback -->
+    <div class="emotion-feedback" id="emotionFeedback">
+        <span class="emotion-feedback-icon" id="feedbackIcon">😊</span>
+        <div class="emotion-feedback-text" id="feedbackText">Notification</div>
+    </div>
+
+    <!-- Loading Spinner for Session Check -->
+    <div id="sessionCheckLoader" style="display: flex; justify-content: center; align-items: center; min-height: 100vh; flex-direction: column; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+        <div class="spinner-border text-light" role="status" style="width: 3rem; height: 3rem; border-width: 0.3rem;">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+        <p style="color: white; margin-top: 1.5rem; font-size: 1.1rem; font-weight: 500;">Checking session...</p>
+    </div>
+
+    <div class="auth-container" id="authContainer" style="display: none;">
+        <div class="auth-card">
+            <div class="auth-left">
+                <h2>Welcome to Elevate</h2>
+                <p class="auth-description">Your personalized STEM learning platform that adapts to your emotional state for optimal learning.</p>
+                <div class="auth-features">
+                    <h4>Features:</h4>
+                    <ul>
+                        <li><i class="fas fa-check-circle"></i>Real-time emotion detection</li>
+                        <li><i class="fas fa-check-circle"></i>Adaptive difficulty levels</li>
+                        <li><i class="fas fa-check-circle"></i>Personalized learning paths</li>
+                        <li><i class="fas fa-check-circle"></i>Comprehensive progress reports</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="auth-right">
+                <form class="auth-form" id="loginForm">
+                    <h2 class="auth-title">Welcome Back</h2>
+                    <p class="auth-subtitle">Sign in to continue learning</p>
+
+                    <div class="role-selector" id="loginRoleSelector">
+                        <button type="button" class="role-btn active" data-role="student">
+                            <i class="fas fa-user-graduate"></i> Student
+                        </button>
+                        <button type="button" class="role-btn" data-role="teacher">
+                            <i class="fas fa-chalkboard-teacher"></i> Teacher
+                        </button>
+                        <button type="button" class="role-btn" data-role="admin">
+                            <i class="fas fa-user-shield"></i> Admin
+                        </button>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="loginEmail">Email</label>
+                        <input type="email" class="form-control" id="loginEmail" placeholder="your@email.com" required autocomplete="email">
+                    </div>
+                    <div class="form-group">
+                        <label for="loginPassword">Password</label>
+                        <div class="password-input-wrapper">
+                            <input type="password" class="form-control" id="loginPassword" placeholder="••••••••" required autocomplete="current-password">
+                            <i class="fas fa-eye password-toggle" data-target="loginPassword"></i>
+                        </div>
+                    </div>
+                    <div class="form-check-wrapper">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="rememberMe">
+                            <label class="form-check-label" for="rememberMe">Remember me</label>
+                        </div>
+                    </div>
+                    <div id="loginAlert" class="auth-alert" style="display:none"></div>
+                    <button type="submit" class="btn btn-auth">Sign In</button>
+                    <div class="auth-switch">
+                        <span>New to Elevate?</span>
+                        <a href="#" id="showSignup">Create Account</a>
+                    </div>
+                </form>
+
+                <form class="auth-form" id="signupForm" style="display: none;">
+                    <h2 class="auth-title">Get Started</h2>
+                    <p class="auth-subtitle">Create your account to begin</p>
+
+                    <div class="role-selector" id="signupRoleSelector">
+                        <button type="button" class="role-btn active" data-role="student">
+                            <i class="fas fa-user-graduate"></i> Student
+                        </button>
+                        <button type="button" class="role-btn" data-role="teacher">
+                            <i class="fas fa-chalkboard-teacher"></i> Teacher
+                        </button>
+                        <button type="button" class="role-btn" data-role="admin">
+                            <i class="fas fa-user-shield"></i> Admin
+                        </button>
+                    </div>
+
+                    <div class="signup-stepper" id="signupStepper" aria-label="Signup steps">
+                        <div class="signup-step active" data-step="1"><span>1</span> Account</div>
+                        <div class="signup-step" data-step="2"><span>2</span> Profile</div>
+                    </div>
+
+                    <div class="signup-role-hint" id="signupRoleHint">
+                        Student/Teacher setup includes grade level. Admin setup includes school profile details.
+                    </div>
+
+                    <div class="signup-step-panel" id="signupStep1">
+                        <div class="form-group">
+                            <label for="signupName">Full Name</label>
+                            <input type="text" class="form-control" id="signupName" placeholder="John Doe" required autocomplete="name">
+                        </div>
+                        <div class="form-group">
+                            <label for="signupEmail">Email</label>
+                            <input type="email" class="form-control" id="signupEmail" placeholder="your@email.com" required autocomplete="email">
+                        </div>
+                        <div class="form-group">
+                            <label for="signupPassword">Password</label>
+                            <div class="password-input-wrapper">
+                                <input type="password" class="form-control" id="signupPassword" placeholder="Min. 8 characters" required autocomplete="new-password">
+                                <i class="fas fa-eye password-toggle" data-target="signupPassword"></i>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-auth" id="signupNextBtn">Continue</button>
+                    </div>
+
+                    <div class="signup-step-panel" id="signupStep2" style="display: none;">
+                        <div class="form-group" id="signupGradeGroup">
+                            <label for="signupGrade">Grade Level</label>
+                            <select class="form-control" id="signupGrade">
+                                <option value="">Select level</option>
+                                <option value="elementary">Elementary</option>
+                                <option value="middle">Middle School</option>
+                                <option value="high">High School</option>
+                                <option value="college">College</option>
+                            </select>
+                        </div>
+
+                        <div id="signupAdminFields" style="display:none">
+                            <div class="form-group">
+                                <label for="signupSchoolName">School Name</label>
+                                <input type="text" class="form-control" id="signupSchoolName" placeholder="Example Public School">
+                            </div>
+                            <div class="form-group">
+                                <label for="signupSchoolSlug">School Slug <span style="color:#888;font-size:0.85em;">used in URLs</span></label>
+                                <input type="text" class="form-control" id="signupSchoolSlug" placeholder="e.g. example-public-school">
+                                <small class="form-text text-muted">Lowercase letters, numbers and hyphens only. Auto-filled from name.</small>
+                            </div>
+                        </div>
+
+                        <div class="signup-actions">
+                            <button type="button" class="btn btn-auth btn-auth-secondary" id="signupBackBtn">Back</button>
+                            <button type="submit" class="btn btn-auth" id="signupSubmitBtn">Create Account</button>
+                        </div>
+                    </div>
+
+                    <div id="signupAlert" class="auth-alert" style="display:none"></div>
+                    <div class="auth-switch">
+                        <span>Already have an account?</span>
+                        <a href="#" id="showLogin">Sign In</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+  // Auto-generate slug from school name for admin signup
+  document.addEventListener('DOMContentLoaded', function () {
+    const nameInput = document.getElementById('signupSchoolName');
+    const slugInput = document.getElementById('signupSchoolSlug');
+    if (nameInput && slugInput) {
+      nameInput.addEventListener('input', function () {
+        // Only auto-fill if the user hasn't manually edited the slug
+        if (!slugInput.dataset.manualEdit) {
+          slugInput.value = nameInput.value
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '');
+        }
+      });
+      slugInput.addEventListener('input', function () {
+        // Mark as manually edited so auto-fill stops overriding
+        slugInput.dataset.manualEdit = '1';
+        // Enforce valid chars in real-time
+        slugInput.value = slugInput.value
+          .toLowerCase()
+          .replace(/[^a-z0-9-]/g, '');
+      });
+    }
+  });
+</script>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
