@@ -1,9 +1,26 @@
 // Configuration module
 import './runtime-config.js';
 
-const SAME_ORIGIN_API = (typeof window !== 'undefined' && window.location?.origin)
-  ? `${window.location.origin}/api`
-  : 'http://localhost:5000/api';
+function getDefaultApiBase() {
+  if (typeof window === "undefined") {
+    return "http://127.0.0.1:5000/api";
+  }
+
+  const { hostname, port, protocol } = window.location;
+
+  // Local development frontend (python http.server, Vite, etc.)
+  if (
+    hostname === "127.0.0.1" ||
+    hostname === "localhost"
+  ) {
+    return "http://127.0.0.1:5000/api";
+  }
+
+  // Production
+  return `${protocol}//${window.location.host}/api`;
+}
+
+const SAME_ORIGIN_API = getDefaultApiBase();
 
 function normalizeApiBase(url) {
   return String(url || '').trim().replace(/\/+$/, '');
@@ -41,7 +58,11 @@ const GLOBAL_API_BASE = normalizeApiBase(
 
 export const config = {
   // API Configuration (will be used when backend is ready)
-  API_BASE_URL: RUNTIME_API_BASE || GLOBAL_API_BASE || import.meta.env?.API_BASE_URL || SAME_ORIGIN_API,
+  API_BASE_URL:
+    RUNTIME_API_BASE
+    || GLOBAL_API_BASE
+    || import.meta?.env?.VITE_API_BASE_URL
+    || SAME_ORIGIN_API,
   API_REQUEST_TIMEOUT_MS: 30000,
   API_TEST_CREATE_TIMEOUT_MS: 180000,
   

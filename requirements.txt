@@ -2,6 +2,7 @@
 flask
 flask_sqlalchemy
 flask_cors
+gunicorn>=23.0
 python-dotenv
 PyJWT
 werkzeug
