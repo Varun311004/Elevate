@@ -42,4 +42,4 @@ shap>=0.44.0
 
 # TensorFlow.js export  — converts .h5 → browser-ready model.json + weights.bin
 # Optional for training/export workflows only.
-tensorflowjs>=4.0; python_version < "3.13"
+# tensorflowjs>=4.0; python_version < "3.13"

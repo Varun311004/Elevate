@@ -8,7 +8,7 @@ set -euo pipefail
 # --------------------
 
 # --- Configuration ---
-HF_SPACE_URL="https://huggingface.co/spaces/Sana2704/elevate"
+HF_SPACE_URL="https://huggingface.co/spaces/VarunJ31/Elevate"
 SOURCE_DIR="ai"
 # --------------------
 
@@ -68,8 +68,8 @@ echo "Initializing temporary git repository..."
 git -C "$TMP_DIR" init
 
 echo "Setting temporary git author for this deployment..."
-git -C "$TMP_DIR" config user.name "Sana-ai-coder"
-git -C "$TMP_DIR" config user.email "sanagirish0@gmail.com"
+git -C "$TMP_DIR" config user.name "Varun311004"
+git -C "$TMP_DIR" config user.email "varunjoshi311004@gmail.com"
 
 git -C "$TMP_DIR" remote add origin "$HF_SPACE_URL"
 git -C "$TMP_DIR" add -A

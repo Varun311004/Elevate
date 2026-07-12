@@ -389,10 +389,17 @@ def _ensure_dkt_model() -> None:
         print(f"[BOOTSTRAP] DKT model exists: {latest_model}. Skipping retraining.")
         return
 
-    _run(
-        [str(PYTHON_EXE), "scripts/train_dkt_model.py"],
-        "Training Deep Knowledge Tracing model on interaction dataset",
+    print(
+    "[BOOTSTRAP] WARNING: DKT model not found."
     )
+    print(
+        "[BOOTSTRAP] Skipping DKT training during startup."
+    )
+    print(
+        "[BOOTSTRAP] Run scripts/train_dkt_model.py manually if a new DKT model is required."
+    )
+
+    return
 
 
 def _ensure_emotion_model() -> None:
