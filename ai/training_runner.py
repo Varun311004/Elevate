@@ -118,7 +118,10 @@ def _prepare_emotion_dataset(repo_dir: Path) -> None:
     target_dir = repo_dir / "dataset"
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    repo_id = str(os.environ.get("HF_EMOTION_DATASET_REPO") or "Sana2704/elevate-emotion-dataset").strip()
+    repo_id = str(
+        os.environ.get("HF_EMOTION_DATASET_REPO")
+        or "VarunJ31/elevate-emotion-dataset"
+    ).strip()
     if not repo_id:
         print("[hf-train-runner] No dataset repo configured; skipping emotion dataset download")
         return

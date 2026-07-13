@@ -659,7 +659,10 @@ def _run_strict_training_job(job_id: str, request_payload: StrictTrainingRequest
     try:
         print("[hf-train-runner] Downloading dataset from Hugging Face...")
         _snapshot_download_with_416_retry(
-            repo_id="Sana2704/elevate-emotion-dataset",
+            repo_id = os.environ.get(
+                "HF_EMOTION_DATASET_REPO",
+                "VarunJ31/elevate-emotion-dataset",
+            ),
             repo_type="dataset",
             local_dir=(AI_ROOT / "dataset"),
             token=os.environ.get("AI_TOPIC_SERVICE_TOKEN"),
