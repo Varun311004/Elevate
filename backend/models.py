@@ -955,8 +955,15 @@ class TrainingJob(db.Model):
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False, index=True)
     
     # THE FIX: Tell SQLAlchemy to auto-fill this on creation and update, matching your DB's NOT NULL rule.
-    updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
-
+    
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=db.func.now(),
+        nullable=False,
+    )
+    
     def as_dict(self):
         return {
             "id": self.id,

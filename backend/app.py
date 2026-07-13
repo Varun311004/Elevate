@@ -249,12 +249,25 @@ def _ensure_teacher_rag_tables(app: Flask) -> None:
         )
         
 def _ensure_admin_tables(app: Flask) -> None:
-    """Create new admin platform tables if they don't exist (Supabase-safe)."""
+    """
+    Create admin tables if missing and automatically patch older schemas.
+
+    Safe for:
+    - PostgreSQL
+    - Supabase
+    - Render
+    - SQLite
+    """
+
     from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text
+
     try:
         inspector = sa_inspect(db.engine)
         existing = set(inspector.get_table_names())
+
         created = []
+        patched = []
 
         target_tables = {
             "audit_logs": AuditLog,
@@ -262,16 +275,204 @@ def _ensure_admin_tables(app: Flask) -> None:
             "training_jobs": TrainingJob,
             "mcq_pipeline_events": MCQPipelineEvent,
         }
+
+        # -------------------------------------------------------
+        # Create missing tables
+        # -------------------------------------------------------
+
         for table_name, model_cls in target_tables.items():
             if table_name not in existing:
-                model_cls.__table__.create(bind=db.engine, checkfirst=True)
+                model_cls.__table__.create(
+                    bind=db.engine,
+                    checkfirst=True,
+                )
                 created.append(table_name)
 
-        if created:
-            app.logger.info("[SchemaGuard] Created admin tables: %s", ", ".join(created))
-    except Exception as exc:
-        app.logger.exception("[SchemaGuard] Failed to create admin tables: %s", exc)
+        # -------------------------------------------------------
+        # Patch training_jobs
+        # -------------------------------------------------------
 
+        if "training_jobs" in existing:
+
+            cols = {
+                c["name"]
+                for c in inspector.get_columns("training_jobs")
+            }
+
+            missing = []
+
+            def add(name, sql):
+                if name not in cols:
+                    db.session.execute(text(sql))
+                    missing.append(name)
+
+            add(
+                "model_name",
+                """
+                ALTER TABLE training_jobs
+                ADD COLUMN IF NOT EXISTS model_name VARCHAR(64)
+                """,
+            )
+
+            add(
+                "trigger_source",
+                """
+                ALTER TABLE training_jobs
+                ADD COLUMN IF NOT EXISTS trigger_source VARCHAR(128)
+                DEFAULT 'admin_ui'
+                """,
+            )
+
+            add(
+                "duration_seconds",
+                """
+                ALTER TABLE training_jobs
+                ADD COLUMN IF NOT EXISTS duration_seconds INTEGER
+                """,
+            )
+
+            add(
+                "logs",
+                """
+                ALTER TABLE training_jobs
+                ADD COLUMN IF NOT EXISTS logs TEXT
+                """,
+            )
+
+            add(
+                "metrics",
+                """
+                ALTER TABLE training_jobs
+                ADD COLUMN IF NOT EXISTS metrics JSONB
+                """,
+            )
+
+            add(
+                "artifact_urls",
+                """
+                ALTER TABLE training_jobs
+                ADD COLUMN IF NOT EXISTS artifact_urls JSONB
+                """,
+            )
+
+            add(
+                "error_message",
+                """
+                ALTER TABLE training_jobs
+                ADD COLUMN IF NOT EXISTS error_message TEXT
+                """,
+            )
+
+            add(
+                "updated_at",
+                """
+                ALTER TABLE training_jobs
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP
+                """,
+            )
+
+            if missing:
+
+                db.session.execute(text("""
+                    UPDATE training_jobs
+                    SET model_name='emotion'
+                    WHERE model_name IS NULL;
+                """))
+
+                db.session.execute(text("""
+                    UPDATE training_jobs
+                    SET trigger_source='admin_ui'
+                    WHERE trigger_source IS NULL;
+                """))
+
+                db.session.execute(text("""
+                    UPDATE training_jobs
+                    SET updated_at=NOW()
+                    WHERE updated_at IS NULL;
+                """))
+
+                db.session.commit()
+
+                patched.extend(
+                    [f"training_jobs.{x}" for x in missing]
+                )
+
+        # -------------------------------------------------------
+        # Patch model_versions
+        # -------------------------------------------------------
+
+        if "model_versions" in existing:
+
+            cols = {
+                c["name"]
+                for c in inspector.get_columns("model_versions")
+            }
+
+            def ensure(name, sql):
+                if name not in cols:
+                    db.session.execute(text(sql))
+                    patched.append(f"model_versions.{name}")
+
+            ensure(
+                "artifact_path",
+                """
+                ALTER TABLE model_versions
+                ADD COLUMN IF NOT EXISTS artifact_path TEXT
+                """,
+            )
+
+            ensure(
+                "notes",
+                """
+                ALTER TABLE model_versions
+                ADD COLUMN IF NOT EXISTS notes TEXT
+                """,
+            )
+
+            ensure(
+                "extra_metrics",
+                """
+                ALTER TABLE model_versions
+                ADD COLUMN IF NOT EXISTS extra_metrics JSONB
+                """,
+            )
+
+            ensure(
+                "promoted_at",
+                """
+                ALTER TABLE model_versions
+                ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMP
+                """,
+            )
+
+            ensure(
+                "promoted_by",
+                """
+                ALTER TABLE model_versions
+                ADD COLUMN IF NOT EXISTS promoted_by INTEGER
+                """,
+            )
+
+            db.session.commit()
+
+        if created:
+            app.logger.info(
+                "[SchemaGuard] Created admin tables: %s",
+                ", ".join(created),
+            )
+
+        if patched:
+            app.logger.info(
+                "[SchemaGuard] Patched admin schema: %s",
+                ", ".join(patched),
+            )
+
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.exception(
+            "[SchemaGuard] Failed to create/patch admin tables: %s",
+            exc,
+        )
 
 def create_app(config_name: str | None = None) -> Flask:
     app = Flask(__name__)

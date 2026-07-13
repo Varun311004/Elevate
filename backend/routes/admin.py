@@ -528,76 +528,134 @@ def get_schools_hierarchy():
 @admin_bp.post("/ml/train-strict")
 @admin_required
 def trigger_strict_ml_training():
+
     admin_user = getattr(g, "current_user", None)
 
     hf_payload = {}
-    repo_url = str(os.environ.get("HF_ML_TRAINING_GITHUB_REPO_URL") or "").strip()
-    repo_ref = str(os.environ.get("HF_ML_TRAINING_GITHUB_REF") or "main").strip()
+
+    repo_url = str(
+        os.environ.get("HF_ML_TRAINING_GITHUB_REPO_URL") or ""
+    ).strip()
+
+    repo_ref = str(
+        os.environ.get("HF_ML_TRAINING_GITHUB_REF") or "main"
+    ).strip()
+
     if repo_url:
         hf_payload["github_repo_url"] = repo_url
+
     if repo_ref:
         hf_payload["github_ref"] = repo_ref
-    min_acc = str(os.environ.get("HF_ML_MIN_EMOTION_ACCURACY") or "").strip()
+
+    min_acc = str(
+        os.environ.get("HF_ML_MIN_EMOTION_ACCURACY") or ""
+    ).strip()
+
     if min_acc:
         try:
             hf_payload["min_emotion_accuracy"] = float(min_acc)
         except ValueError:
             pass
-    procs = str(os.environ.get("HF_ML_TRAINING_PROCESSES") or "").strip()
+
+    procs = str(
+        os.environ.get("HF_ML_TRAINING_PROCESSES") or ""
+    ).strip()
+
     if procs:
         try:
-            hf_payload["process_count"] = max(1, min(int(procs), 16))
+            hf_payload["process_count"] = max(
+                1,
+                min(int(procs), 16),
+            )
         except ValueError:
             pass
 
-    # 1. Attempt the remote execution FIRST (long HF cold-starts are handled in hf_training_service).
     try:
-        result = start_hf_strict_training(hf_payload or None)
-    except Exception as e:
-        current_app.logger.error(f"[HF CRASH] Failed to contact Hugging Face: {str(e)}")
-        # Do NOT touch the database. Return the error directly to the UI.
-        return jsonify({
-            "error": f"Hugging Face Connection Error. The AI space might be waking up. Details: {str(e)}"
-        }), 502
+        result = start_hf_strict_training(
+            hf_payload or None
+        )
+    except Exception as exc:
 
-    # 2. Validate the remote execution
-    if not result or not isinstance(result, dict):
-        return jsonify({"error": "Hugging Face service returned an invalid or empty response."}), 502
+        current_app.logger.exception(
+            "[HF START FAILED]"
+        )
 
-    extracted_job_id = result.get("payload", {}).get("job_id") if isinstance(result.get("payload"), dict) else None
+        return jsonify(
+            {
+                "error": str(exc),
+            }
+        ), 502
 
-    # 3. The Professional Check: If we don't have a valid remote ID, ABORT.
-    if not result.get("ok") or not extracted_job_id:
-        error_msg = result.get("error") or "Failed to retrieve a valid job_id from Hugging Face."
-        current_app.logger.warning(f"[HF START FAILED] {error_msg}")
-        return jsonify({"error": error_msg}), 502
+    if (
+        not result
+        or not result.get("ok")
+    ):
+        return jsonify(
+            {
+                "error": result.get("error", "HF training failed"),
+            }
+        ), 502
 
-    # 4. Success! We have a guaranteed remote job_id. NOW we save to the strict database.
+    payload = result.get("payload") or {}
+
+    remote_job_id = payload.get("job_id")
+
+    if not remote_job_id:
+        return jsonify(
+            {
+                "error": "No job_id returned from HuggingFace.",
+            }
+        ), 502
+
     job = TrainingJob(
-        job_id=extracted_job_id,
-        model_name="emotion",  
+        job_id=remote_job_id,
+        model_name="emotion",
         triggered_by=admin_user.id if admin_user else None,
         trigger_source="admin_ui",
         status="queued",
         started_at=utcnow(),
-        updated_at=utcnow()
+        updated_at=utcnow(),
     )
-    db.session.add(job)
-    
-    try:
-        _audit("ml.train_strict.triggered", "training_job", None, "emotion", None,
-               {"job_id": job.job_id, "status": job.status})
-        db.session.commit()
-    except Exception as db_e:
-        db.session.rollback()
-        current_app.logger.error(f"[DB CRASH] Failed to save training job to database: {str(db_e)}")
-        return jsonify({"error": f"Database strictness or connection error: {str(db_e)}"}), 500
 
-    return jsonify({
-        "ok": True,
-        "db_job_id": job.id,
-        **(result.get("payload", {}))
-    }), 202
+    try:
+
+        db.session.add(job)
+
+        _audit(
+            "ml.train_strict.triggered",
+            "training_job",
+            None,
+            "emotion",
+            None,
+            {
+                "job_id": job.job_id,
+                "status": job.status,
+            },
+        )
+
+        db.session.commit()
+
+    except Exception as exc:
+
+        db.session.rollback()
+
+        current_app.logger.exception(
+            "[TrainingJob] Database save failed"
+        )
+
+        return jsonify(
+            {
+                "error": str(exc),
+            }
+        ), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "db_job_id": job.id,
+            **payload,
+        }
+    ), 202
 
 @admin_bp.get("/ml/train-strict/<job_id>")
 @admin_required
