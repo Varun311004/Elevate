@@ -127,3 +127,11 @@ ai/.git/
 # Local one-off files
 Image 3.png
 folder_structure.txt
+
+
+#Testing
+playwright-report/
+test-results/
+tests/videos/
+tests/screenshots/
+tests/traces/

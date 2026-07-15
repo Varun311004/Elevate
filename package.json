@@ -1,0 +1,30 @@
+{
+  "name": "elevate",
+  "version": "1.0.0",
+  "description": "<!-- # Elevate - Adaptive STEM Learning Platform",
+  "main": "index.js",
+  "scripts": {
+    "test":"playwright test",
+    "test:headed":"playwright test --headed",
+    "test:ui":"playwright test --ui",
+    "test:auth":"playwright test tests/auth",
+    "test:report":"playwright show-report"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Varun311004/Elevate.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Varun311004/Elevate/issues"
+  },
+  "homepage": "https://github.com/Varun311004/Elevate#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2"
+  }
+}
