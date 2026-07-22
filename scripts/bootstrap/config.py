@@ -68,7 +68,9 @@ DEFAULT_BROWSER_URL = FRONTEND_URL
 
 BOOTSTRAP_TIMEOUT_SECONDS = 180
 
-HEALTH_POLL_INTERVAL = 1.0
+# Lowered from 1.0s so the readiness spinner feels responsive instead of
+# appearing to hang for a full second between checks.
+HEALTH_POLL_INTERVAL = 0.4
 
 # ==========================================================
 # Startup Commands
@@ -76,8 +78,7 @@ HEALTH_POLL_INTERVAL = 1.0
 
 BACKEND_START_COMMAND = [
     str(VENV_PYTHON),
-    "-m",
-    "backend.app",
+    str(BACKEND_DIR / "run.py"),
 ]
 
 FRONTEND_START_COMMAND = [

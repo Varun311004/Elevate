@@ -11,6 +11,8 @@ alembic
 psycopg2-binary
 requests>=2.31.0
 pgvector>=0.2.5
+imagehash>=4.3.1
+torch==2.5.1
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 pytest
@@ -41,6 +43,10 @@ seaborn>=0.12
 # Explainability
 shap>=0.44.0
 
-# TensorFlow.js export  — converts .h5 → browser-ready model.json + weights.bin
-# Optional for training/export workflows only.
-# tensorflowjs>=4.0; python_version < "3.13"
+# TensorFlow.js export — converts .h5 → browser-ready model.json + weights.bin
+# Pinned to 4.15.0: newer versions (4.16+) require tensorflow-decision-forests
+# which conflicts with tensorflow 2.16.x (requires tensorflow~=2.15).
+# tensorflowjs 4.15.0 still hard-imports tensorflow_decision_forests at load time
+# even for plain Keras conversion; scripts/stubs/tensorflow_decision_forests/
+# provides a no-op stub that satisfies the import without the real package.
+tensorflowjs==4.15.0; python_version < "3.13"

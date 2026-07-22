@@ -1,13 +1,9 @@
 """
-backend/app.py  — Application factory
-======================================
-Changes from original:
-  • Registers the new  /api/ai/emotion  blueprint (ai_emotion.py)
-  • All other code is identical to the original
+backend/app.py — Application factory
 """
 
+from pathlib import Path
 from flask import Flask, send_from_directory, Response, redirect
-from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from sqlalchemy import inspect, text
 import os
@@ -17,8 +13,8 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-load_dotenv(os.path.join(PROJECT_ROOT, '.env'), override=False)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 from .config import get_config
 from .models import (
@@ -37,16 +33,12 @@ from .routes.admin     import admin_bp
 from .routes.teacher   import teacher_bp
 from .routes.student   import student_bp
 from .routes.settings  import settings_bp
-
-# ── NEW: AI emotion inference blueprint ─────────────────────────────────────
 from .routes.ai_emotion import ai_emotion_bp, inspect_emotion_artifacts
-
 from .logging_config import configure_logging
 
 
 def _is_truthy_env(raw_value: str | None) -> bool:
-    value = str(raw_value or "").strip().lower()
-    return value in {"1", "true", "yes", "on"}
+    return str(raw_value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _assert_gemini_key_startup_health(app: Flask, environment_name: str) -> None:
@@ -54,9 +46,8 @@ def _assert_gemini_key_startup_health(app: Flask, environment_name: str) -> None
     if bool(app.config.get("TESTING")):
         return
 
-    normalized_env = str(environment_name or "").strip().lower()
     is_production_runtime = (
-        normalized_env == "production"
+        str(environment_name or "").strip().lower() == "production"
         or bool(str(os.environ.get("RENDER_SERVICE_ID") or "").strip())
         or _is_truthy_env(os.environ.get("RENDER"))
         or bool(str(os.environ.get("K_SERVICE") or "").strip())
@@ -71,11 +62,7 @@ def _assert_gemini_key_startup_health(app: Flask, environment_name: str) -> None
     if not require_key:
         return
 
-    gemini_key = (
-        os.environ.get("GEMINI_API_KEY")
-        or os.environ.get("GOOGLE_API_KEY")
-        or ""
-    )
+    gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
     if str(gemini_key).strip():
         return
 
@@ -104,7 +91,6 @@ def _log_emotion_deploy_status(app: Flask) -> None:
             details.get("backend_model_path"),
             details.get("metadata_path"),
         )
-
         if summary:
             app.logger.info(
                 "[EmotionDeploy] training_summary model_type=%s accuracy=%s timestamp=%s classes=%s",
@@ -113,23 +99,22 @@ def _log_emotion_deploy_status(app: Flask) -> None:
                 summary.get("timestamp"),
                 summary.get("class_names"),
             )
-
         app.logger.info(
-            "[EmotionDeploy] Note: training is not automatic at backend startup. Use scripts/train_strict_pipeline.py in HF/CI training pipelines."
+            "[EmotionDeploy] Note: training is not automatic at backend startup. "
+            "Use scripts/train_strict_pipeline.py in HF/CI training pipelines."
         )
     except Exception as exc:
         app.logger.warning("[EmotionDeploy] startup diagnostics failed: %s", exc)
 
 
 def _ensure_assignment_integrity_columns(app: Flask) -> None:
-    # """Backfill integrity columns if schema migration was skipped in an existing DB.
+    """Backfill integrity columns if schema migration was skipped in an existing DB.
 
-    # Silently no-ops on fresh databases where core tables don't exist yet.
-    # """
+    Silently no-ops on fresh databases where core tables don't exist yet.
+    """
     try:
         inspector = inspect(db.engine)
         table_names = set(inspector.get_table_names())
-        # Guard: only run when the core schema is already established
         if "users" not in table_names or "test_assignments" not in table_names:
             return
 
@@ -149,13 +134,12 @@ def _ensure_assignment_integrity_columns(app: Flask) -> None:
             "[SchemaGuard] Missing test_assignments columns detected: %s. Applying compatibility patch.",
             ", ".join(missing_columns),
         )
-
-        default_true_literal = "1" if db.engine.dialect.name == "sqlite" else "TRUE"
+        default_true = "1" if db.engine.dialect.name == "sqlite" else "TRUE"
         for column_name in missing_columns:
             db.session.execute(
                 text(
                     f"ALTER TABLE test_assignments "
-                    f"ADD COLUMN {column_name} BOOLEAN NOT NULL DEFAULT {default_true_literal}"
+                    f"ADD COLUMN {column_name} BOOLEAN NOT NULL DEFAULT {default_true}"
                 )
             )
         db.session.commit()
@@ -178,10 +162,7 @@ def _ensure_teacher_interventions_table(app: Flask) -> None:
     try:
         inspector = inspect(db.engine)
         existing = set(inspector.get_table_names())
-        # Guard: only run as a safety net when the base schema already exists
-        if "users" not in existing:
-            return
-        if "teacher_interventions" in existing:
+        if "users" not in existing or "teacher_interventions" in existing:
             return
 
         app.logger.warning(
@@ -204,23 +185,18 @@ def _ensure_teacher_rag_tables(app: Flask) -> None:
     try:
         inspector = inspect(db.engine)
         existing = set(inspector.get_table_names())
-        # Guard: only run as a safety net when the base schema already exists
         if "users" not in existing:
             return
 
         created = []
-
-        if "teacher_documents" not in existing:
-            TeacherDocument.__table__.create(bind=db.engine, checkfirst=True)
-            created.append("teacher_documents")
-
-        if "teacher_document_chunks" not in existing:
-            TeacherDocumentChunk.__table__.create(bind=db.engine, checkfirst=True)
-            created.append("teacher_document_chunks")
-
-        if "rag_retrieval_events" not in existing:
-            RagRetrievalEvent.__table__.create(bind=db.engine, checkfirst=True)
-            created.append("rag_retrieval_events")
+        for table_name, model_cls in [
+            ("teacher_documents", TeacherDocument),
+            ("teacher_document_chunks", TeacherDocumentChunk),
+            ("rag_retrieval_events", RagRetrievalEvent),
+        ]:
+            if table_name not in existing:
+                model_cls.__table__.create(bind=db.engine, checkfirst=True)
+                created.append(table_name)
 
         if "teacher_document_chunks" in existing:
             columns = {
@@ -247,245 +223,85 @@ def _ensure_teacher_rag_tables(app: Flask) -> None:
         app.logger.warning(
             "[SchemaGuard] Could not create RAG tables (non-fatal): %s", exc
         )
-        
+
+
 def _ensure_admin_tables(app: Flask) -> None:
+    """Create admin tables if missing and automatically patch older schemas.
+
+    Safe for PostgreSQL, Supabase, Render, and SQLite.
     """
-    Create admin tables if missing and automatically patch older schemas.
-
-    Safe for:
-    - PostgreSQL
-    - Supabase
-    - Render
-    - SQLite
-    """
-
-    from sqlalchemy import inspect as sa_inspect
-    from sqlalchemy import text
-
     try:
-        inspector = sa_inspect(db.engine)
+        inspector = inspect(db.engine)
         existing = set(inspector.get_table_names())
-
         created = []
         patched = []
 
-        target_tables = {
+        # Create missing tables
+        for table_name, model_cls in {
             "audit_logs": AuditLog,
             "model_versions": ModelVersion,
             "training_jobs": TrainingJob,
             "mcq_pipeline_events": MCQPipelineEvent,
-        }
-
-        # -------------------------------------------------------
-        # Create missing tables
-        # -------------------------------------------------------
-
-        for table_name, model_cls in target_tables.items():
+        }.items():
             if table_name not in existing:
-                model_cls.__table__.create(
-                    bind=db.engine,
-                    checkfirst=True,
-                )
+                model_cls.__table__.create(bind=db.engine, checkfirst=True)
                 created.append(table_name)
 
-        # -------------------------------------------------------
-        # Patch training_jobs
-        # -------------------------------------------------------
-
+        # Patch training_jobs columns
         if "training_jobs" in existing:
-
-            cols = {
-                c["name"]
-                for c in inspector.get_columns("training_jobs")
-            }
-
+            cols = {c["name"] for c in inspector.get_columns("training_jobs")}
             missing = []
 
-            def add(name, sql):
+            def _add_col(name: str, sql: str) -> None:
                 if name not in cols:
                     db.session.execute(text(sql))
                     missing.append(name)
 
-            add(
-                "model_name",
-                """
-                ALTER TABLE training_jobs
-                ADD COLUMN IF NOT EXISTS model_name VARCHAR(64)
-                """,
-            )
-
-            add(
-                "trigger_source",
-                """
-                ALTER TABLE training_jobs
-                ADD COLUMN IF NOT EXISTS trigger_source VARCHAR(128)
-                DEFAULT 'admin_ui'
-                """,
-            )
-
-            add(
-                "duration_seconds",
-                """
-                ALTER TABLE training_jobs
-                ADD COLUMN IF NOT EXISTS duration_seconds INTEGER
-                """,
-            )
-
-            add(
-                "logs",
-                """
-                ALTER TABLE training_jobs
-                ADD COLUMN IF NOT EXISTS logs TEXT
-                """,
-            )
-
-            add(
-                "metrics",
-                """
-                ALTER TABLE training_jobs
-                ADD COLUMN IF NOT EXISTS metrics JSONB
-                """,
-            )
-
-            add(
-                "artifact_urls",
-                """
-                ALTER TABLE training_jobs
-                ADD COLUMN IF NOT EXISTS artifact_urls JSONB
-                """,
-            )
-
-            add(
-                "error_message",
-                """
-                ALTER TABLE training_jobs
-                ADD COLUMN IF NOT EXISTS error_message TEXT
-                """,
-            )
-
-            add(
-                "updated_at",
-                """
-                ALTER TABLE training_jobs
-                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP
-                """,
-            )
+            _add_col("model_name",       "ALTER TABLE training_jobs ADD COLUMN IF NOT EXISTS model_name VARCHAR(64)")
+            _add_col("trigger_source",   "ALTER TABLE training_jobs ADD COLUMN IF NOT EXISTS trigger_source VARCHAR(128) DEFAULT 'admin_ui'")
+            _add_col("duration_seconds", "ALTER TABLE training_jobs ADD COLUMN IF NOT EXISTS duration_seconds INTEGER")
+            _add_col("logs",             "ALTER TABLE training_jobs ADD COLUMN IF NOT EXISTS logs TEXT")
+            _add_col("metrics",          "ALTER TABLE training_jobs ADD COLUMN IF NOT EXISTS metrics JSONB")
+            _add_col("artifact_urls",    "ALTER TABLE training_jobs ADD COLUMN IF NOT EXISTS artifact_urls JSONB")
+            _add_col("error_message",    "ALTER TABLE training_jobs ADD COLUMN IF NOT EXISTS error_message TEXT")
+            _add_col("updated_at",       "ALTER TABLE training_jobs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP")
 
             if missing:
-
-                db.session.execute(text("""
-                    UPDATE training_jobs
-                    SET model_name='emotion'
-                    WHERE model_name IS NULL;
-                """))
-
-                db.session.execute(text("""
-                    UPDATE training_jobs
-                    SET trigger_source='admin_ui'
-                    WHERE trigger_source IS NULL;
-                """))
-
-                db.session.execute(text("""
-                    UPDATE training_jobs
-                    SET updated_at=NOW()
-                    WHERE updated_at IS NULL;
-                """))
-
+                db.session.execute(text("UPDATE training_jobs SET model_name='emotion' WHERE model_name IS NULL"))
+                db.session.execute(text("UPDATE training_jobs SET trigger_source='admin_ui' WHERE trigger_source IS NULL"))
+                db.session.execute(text("UPDATE training_jobs SET updated_at=NOW() WHERE updated_at IS NULL"))
                 db.session.commit()
+                patched.extend(f"training_jobs.{x}" for x in missing)
 
-                patched.extend(
-                    [f"training_jobs.{x}" for x in missing]
-                )
-
-        # -------------------------------------------------------
-        # Patch model_versions
-        # -------------------------------------------------------
-
+        # Patch model_versions columns
         if "model_versions" in existing:
+            cols = {c["name"] for c in inspector.get_columns("model_versions")}
 
-            cols = {
-                c["name"]
-                for c in inspector.get_columns("model_versions")
-            }
-
-            def ensure(name, sql):
+            def _ensure_col(name: str, sql: str) -> None:
                 if name not in cols:
                     db.session.execute(text(sql))
                     patched.append(f"model_versions.{name}")
 
-            ensure(
-                "artifact_path",
-                """
-                ALTER TABLE model_versions
-                ADD COLUMN IF NOT EXISTS artifact_path TEXT
-                """,
-            )
-
-            ensure(
-                "notes",
-                """
-                ALTER TABLE model_versions
-                ADD COLUMN IF NOT EXISTS notes TEXT
-                """,
-            )
-
-            ensure(
-                "extra_metrics",
-                """
-                ALTER TABLE model_versions
-                ADD COLUMN IF NOT EXISTS extra_metrics JSONB
-                """,
-            )
-
-            ensure(
-                "promoted_at",
-                """
-                ALTER TABLE model_versions
-                ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMP
-                """,
-            )
-
-            ensure(
-                "promoted_by",
-                """
-                ALTER TABLE model_versions
-                ADD COLUMN IF NOT EXISTS promoted_by INTEGER
-                """,
-            )
-
+            _ensure_col("artifact_path", "ALTER TABLE model_versions ADD COLUMN IF NOT EXISTS artifact_path TEXT")
+            _ensure_col("notes",         "ALTER TABLE model_versions ADD COLUMN IF NOT EXISTS notes TEXT")
+            _ensure_col("extra_metrics", "ALTER TABLE model_versions ADD COLUMN IF NOT EXISTS extra_metrics JSONB")
+            _ensure_col("promoted_at",   "ALTER TABLE model_versions ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMP")
+            _ensure_col("promoted_by",   "ALTER TABLE model_versions ADD COLUMN IF NOT EXISTS promoted_by INTEGER")
             db.session.commit()
 
         if created:
-            app.logger.info(
-                "[SchemaGuard] Created admin tables: %s",
-                ", ".join(created),
-            )
-
+            app.logger.info("[SchemaGuard] Created admin tables: %s", ", ".join(created))
         if patched:
-            app.logger.info(
-                "[SchemaGuard] Patched admin schema: %s",
-                ", ".join(patched),
-            )
+            app.logger.info("[SchemaGuard] Patched admin schema: %s", ", ".join(patched))
 
     except Exception as exc:
         db.session.rollback()
-        app.logger.exception(
-            "[SchemaGuard] Failed to create/patch admin tables: %s",
-            exc,
-        )
+        app.logger.exception("[SchemaGuard] Failed to create/patch admin tables: %s", exc)
+
 
 def create_app(config_name: str | None = None) -> Flask:
     app = Flask(__name__)
-    SCHOOL_SLUG_HINT_COOKIE = 'elevate_school_slug_hint'
-
-    def _normalize_school_slug(value: str | None) -> str | None:
-        normalized = str(value or '').strip().lower()
-        if not normalized:
-            return None
-        normalized = re.sub(r'[^a-z0-9\s_-]+', '', normalized)
-        normalized = re.sub(r'[\s_]+', '-', normalized)
-        normalized = re.sub(r'-+', '-', normalized).strip('-')
-        return normalized or None
+    SCHOOL_SLUG_HINT_COOKIE = "elevate_school_slug_hint"
 
     environment_name = str(
         config_name or os.environ.get("FLASK_ENV", "development")
@@ -525,36 +341,32 @@ def create_app(config_name: str | None = None) -> Flask:
         _ensure_teacher_rag_tables(app)
         _ensure_admin_tables(app)
 
-    # with app.app_context():
-    #     db.create_all()
-    #     app.logger.info("Database tables created/verified")
-
     app.url_map.strict_slashes = False
 
-    # ── Existing blueprints ──────────────────────────────────────────────────
-    app.register_blueprint(auth_bp,      url_prefix="/api/auth")
-    app.register_blueprint(questions_bp, url_prefix="/api/questions")
-    app.register_blueprint(progress_bp,  url_prefix="/api/progress")
-    app.register_blueprint(emotions_bp,  url_prefix="/api/emotions")
-    app.register_blueprint(reports_bp,   url_prefix="/api/reports")
-    app.register_blueprint(admin_bp,     url_prefix="/api/admin")
-    app.register_blueprint(teacher_bp,   url_prefix="/api/teacher")
-    app.register_blueprint(student_bp,   url_prefix="/api/student")
-    app.register_blueprint(settings_bp,  url_prefix="/api/settings")
-
-    # ── NEW: AI blueprint ────────────────────────────────────────────────────
+    app.register_blueprint(auth_bp,       url_prefix="/api/auth")
+    app.register_blueprint(questions_bp,  url_prefix="/api/questions")
+    app.register_blueprint(progress_bp,   url_prefix="/api/progress")
+    app.register_blueprint(emotions_bp,   url_prefix="/api/emotions")
+    app.register_blueprint(reports_bp,    url_prefix="/api/reports")
+    app.register_blueprint(admin_bp,      url_prefix="/api/admin")
+    app.register_blueprint(teacher_bp,    url_prefix="/api/teacher")
+    app.register_blueprint(student_bp,    url_prefix="/api/student")
+    app.register_blueprint(settings_bp,   url_prefix="/api/settings")
     app.register_blueprint(ai_emotion_bp, url_prefix="/api/ai/emotion")
 
-    # ── Frontend static serving ──────────────────────────────────────────────
-    FRONTEND_DIR = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), '..', 'frontend')
-    )
+    # Frontend static serving
+    FRONTEND_DIR = str(PROJECT_ROOT / "frontend")
+
+    def _normalize_school_slug(value: str | None) -> str | None:
+        normalized = re.sub(r"[^a-z0-9\s_-]+", "", str(value or "").strip().lower())
+        normalized = re.sub(r"[\s_]+", "-", normalized)
+        normalized = re.sub(r"-+", "-", normalized).strip("-")
+        return normalized or None
 
     def _serve_frontend_file(filename: str):
-        if not filename or filename.startswith('api/'):
+        if not filename or filename.startswith("api/"):
             return None
-
-        normalized = filename.lstrip('/')
+        normalized = filename.lstrip("/")
         full = os.path.join(FRONTEND_DIR, normalized)
         if os.path.exists(full):
             return send_from_directory(FRONTEND_DIR, normalized)
@@ -562,83 +374,64 @@ def create_app(config_name: str | None = None) -> Flask:
 
     def _slug_hint_response(slug: str):
         normalized_slug = _normalize_school_slug(slug)
-        response = redirect('/index.html', code=302)
+        response = redirect("/index.html", code=302)
         if normalized_slug:
             response.set_cookie(
                 SCHOOL_SLUG_HINT_COOKIE,
                 normalized_slug,
                 max_age=60 * 60 * 24 * 30,
-                path='/',
-                samesite='Lax',
+                path="/",
+                samesite="Lax",
             )
         else:
             response.delete_cookie(SCHOOL_SLUG_HINT_COOKIE)
         return response
 
-    @app.get('/')
+    @app.get("/")
     def serve_index():
-        return send_from_directory(FRONTEND_DIR, 'index.html')
+        return send_from_directory(FRONTEND_DIR, "index.html")
 
-    @app.get('/admin')
+    @app.get("/admin")
     def serve_admin():
-        return send_from_directory(FRONTEND_DIR, 'admin.html')
+        return send_from_directory(FRONTEND_DIR, "admin.html")
 
-    @app.get('/admin-schools')
-    @app.get('/admin-schools.html')
+    @app.get("/admin-schools")
+    @app.get("/admin-schools.html")
     def redirect_admin_schools_to_admin():
-        return redirect('/admin', code=302)
+        return redirect("/admin", code=302)
 
-    @app.get('/favicon.ico')
+    @app.get("/favicon.ico")
     def serve_favicon():
         return Response(status=204)
 
-    @app.get('/<slug>')
-    @app.get('/<slug>/')
+    @app.get("/<slug>")
+    @app.get("/<slug>/")
     def serve_slug_index(slug):
-        slug_str = str(slug).strip('/')
-        if slug_str.lower() == 'api':
+        slug_str = str(slug).strip("/")
+        if slug_str.lower() == "api":
             return not_found(None)
-
-        # Single-segment frontend files (e.g. /index.html, /dashboard.html)
-        # must be served normally, not treated as school slug routes.
-        if '.' in slug_str:
+        if "." in slug_str:
             served = _serve_frontend_file(slug_str)
-            if served is not None:
-                return served
-            return not_found(None)
-
-        # Public auth page must never expose school slug in URL.
+            return served if served is not None else not_found(None)
         return _slug_hint_response(slug_str)
 
-    @app.get('/<slug>/<path:filename>')
+    @app.get("/<slug>/<path:filename>")
     def serve_slug_frontend_files(slug, filename):
-        if str(slug).lower() == 'api' or str(filename).startswith('api/'):
+        if str(slug).lower() == "api" or str(filename).startswith("api/"):
             return not_found(None)
-
-        normalized_filename = str(filename).strip('/')
-
-        if str(filename).strip('/').lower() == 'index.html':
-            # Canonicalize auth page to non-slug URL.
-            return _slug_hint_response(str(slug).strip('/'))
-
-        # Avoid collisions with real static asset folders (e.g. /css/styles.css, /js/main.js)
-        # that would otherwise be misread as /<slug>/<file> routes.
+        if str(filename).strip("/").lower() == "index.html":
+            return _slug_hint_response(str(slug).strip("/"))
         combined = f"{str(slug).strip('/')}/{str(filename).lstrip('/')}"
         served = _serve_frontend_file(combined)
         if served is not None:
             return served
-
         served = _serve_frontend_file(filename)
-        if served is not None:
-            return served
-        return not_found(None)
+        return served if served is not None else not_found(None)
 
-    @app.get('/<path:filename>')
+    @app.get("/<path:filename>")
     def serve_frontend_files(filename):
         served = _serve_frontend_file(filename)
-        if served is not None:
-            return served
-        return not_found(None)
+        return served if served is not None else not_found(None)
 
     @app.errorhandler(404)
     def not_found(error):
@@ -646,24 +439,7 @@ def create_app(config_name: str | None = None) -> Flask:
 
     @app.errorhandler(500)
     def internal_error(error):
-        app.logger.error(f"Internal server error: {str(error)}")
+        app.logger.error("Internal server error: %s", error)
         return {"error": "Internal server error"}, 500
 
     return app
-
-import logging
-# Mute Werkzeug health check spam
-log = logging.getLogger('werkzeug')
-class HealthCheckFilter(logging.Filter):
-    def filter(self, record):
-        return 'GET /health' not in record.getMessage()
-log.addFilter(HealthCheckFilter())
-
-if __name__ == "__main__":
-    env_name = os.environ.get("FLASK_ENV", "development")
-    app = create_app(env_name)
-    app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", "5000")),
-        debug=(env_name == "development"),
-    )

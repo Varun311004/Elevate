@@ -1,43 +1,11 @@
 {
-  "timestamp": "20260401T113508Z",
-  "model_type": "hog_mlp_tfjs",
-  "feature_info": {
-    "type": "HOG",
-    "img_size": [
-      48,
-      48
-    ],
-    "colour": "grayscale",
-    "hog_orientations": 9,
-    "hog_pixels_per_cell": [
-      6,
-      6
-    ],
-    "hog_cells_per_block": [
-      2,
-      2
-    ],
-    "feature_dim": 1764,
-    "rationale": "HOG encodes gradient orientation histograms in local spatial cells. It captures eyebrow shape, mouth corner angles, and eye aperture independently of illumination \u2014 the cues humans use to read emotion."
-  },
-  "model_info": {
-    "architecture": "HOG(48\u00d748) \u2192 MLP(512, 128) \u2192 Softmax(7)",
-    "hidden_layer_sizes": [
-      512,
-      128
-    ],
-    "activation": "relu",
-    "solver": "adam",
-    "learning_rate_init": 0.001,
-    "batch_size": 128,
-    "l2_alpha": 0.0001,
-    "early_stopping": true,
-    "epochs_trained": 22,
-    "final_train_loss": 0.001968,
-    "n_features": 1764,
-    "n_classes": 7,
-    "total_params": 970247
-  },
+  "timestamp": "20260722T180140Z",
+  "model_type": "efficientnetv2b0_transfer",
+  "architecture": "EfficientNetV2B0 + Dense(256) + Softmax(7)",
+  "img_size": [
+    96,
+    96
+  ],
   "class_names": [
     "happy",
     "bored",
@@ -48,280 +16,123 @@
     "surprised"
   ],
   "dataset_counts": {
-    "happy": 7215,
-    "bored": 3222,
-    "focused": 3123,
-    "confused": 1285,
-    "neutral": 4965,
-    "angry": 3995,
-    "surprised": 3171
+    "train": 18855,
+    "val": 3350,
+    "test": 4771,
+    "total": 26976
   },
-  "split_counts": {
-    "train_balanced": 15778,
-    "val": 4043,
-    "test": 4053,
-    "train_by_class": {
-      "happy": 2255,
-      "bored": 2255,
-      "focused": 2255,
-      "confused": 2248,
-      "neutral": 2255,
-      "angry": 2255,
-      "surprised": 2255
-    }
+  "class_weight": {
+    "0": 0.516108723619741,
+    "1": 1.1777750015616215,
+    "2": 1.6206807632800413,
+    "3": 2.918278904194397,
+    "4": 0.7585388421772539,
+    "5": 0.9234046721191047,
+    "6": 1.173158287705326
   },
-  "class_balance_weights": {
-    "happy": 1.0827,
-    "bored": 0.78,
-    "focused": 0.78,
-    "confused": 0.8474,
-    "neutral": 1.32,
-    "angry": 1.32,
-    "surprised": 0.9599
-  },
-  "class_prior_multipliers": {
-    "happy": 0.9998,
-    "bored": 0.9998,
-    "focused": 0.9998,
-    "confused": 1.0013,
-    "neutral": 0.9998,
-    "angry": 0.9998,
-    "surprised": 0.9998
+  "training_history": {
+    "epochs_run": 18,
+    "best_val_accuracy": 0.6785074472427368
   },
   "validation_metrics": {
-    "accuracy": 0.7203,
-    "macro_f1": 0.7466,
-    "macro_precision": 0.7356,
-    "macro_recall": 0.7629,
+    "accuracy": 0.6591,
+    "macro_f1": 0.7045,
+    "macro_precision": 0.6952,
+    "macro_recall": 0.7258,
     "per_class": {
       "happy": {
-        "precision": 0.7608,
-        "recall": 0.6645,
-        "f1": 0.7094,
-        "support": 1082
+        "precision": 0.7089,
+        "recall": 0.5209,
+        "f1": 0.6005,
+        "support": 935
       },
       "bored": {
-        "precision": 0.9959,
-        "recall": 1.0,
-        "f1": 0.9979,
-        "support": 483
+        "precision": 0.9549,
+        "recall": 0.9922,
+        "f1": 0.9732,
+        "support": 512
       },
       "focused": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 468
+        "precision": 0.9793,
+        "recall": 0.9,
+        "f1": 0.938,
+        "support": 210
       },
       "confused": {
-        "precision": 0.6878,
-        "recall": 0.849,
-        "f1": 0.7599,
-        "support": 192
+        "precision": 0.6911,
+        "recall": 0.9444,
+        "f1": 0.7981,
+        "support": 180
       },
       "neutral": {
-        "precision": 0.5751,
-        "recall": 0.5349,
-        "f1": 0.5543,
-        "support": 744
+        "precision": 0.5111,
+        "recall": 0.5734,
+        "f1": 0.5405,
+        "support": 640
       },
       "angry": {
-        "precision": 0.4985,
-        "recall": 0.5426,
-        "f1": 0.5196,
-        "support": 599
+        "precision": 0.4049,
+        "recall": 0.4411,
+        "f1": 0.4222,
+        "support": 492
       },
       "surprised": {
-        "precision": 0.6312,
-        "recall": 0.7495,
-        "f1": 0.6853,
-        "support": 475
+        "precision": 0.6164,
+        "recall": 0.7087,
+        "f1": 0.6593,
+        "support": 381
       }
-    },
-    "confusion_matrix": [
-      [
-        719,
-        1,
-        0,
-        31,
-        120,
-        122,
-        89
-      ],
-      [
-        0,
-        483,
-        0,
-        0,
-        0,
-        0,
-        0
-      ],
-      [
-        0,
-        0,
-        468,
-        0,
-        0,
-        0,
-        0
-      ],
-      [
-        11,
-        0,
-        0,
-        163,
-        9,
-        6,
-        3
-      ],
-      [
-        102,
-        1,
-        0,
-        21,
-        398,
-        163,
-        59
-      ],
-      [
-        70,
-        0,
-        0,
-        16,
-        131,
-        325,
-        57
-      ],
-      [
-        43,
-        0,
-        0,
-        6,
-        34,
-        36,
-        356
-      ]
-    ]
+    }
   },
   "test_metrics": {
-    "accuracy": 0.7293,
-    "macro_f1": 0.7523,
-    "macro_precision": 0.7411,
-    "macro_recall": 0.7681,
+    "accuracy": 0.7212,
+    "macro_f1": 0.7191,
+    "macro_precision": 0.7063,
+    "macro_recall": 0.7432,
     "per_class": {
       "happy": {
-        "precision": 0.7669,
-        "recall": 0.7018,
-        "f1": 0.7329,
-        "support": 1083
+        "precision": 0.7039,
+        "recall": 0.5221,
+        "f1": 0.5996,
+        "support": 1061
       },
       "bored": {
-        "precision": 0.9979,
-        "recall": 1.0,
-        "f1": 0.999,
-        "support": 484
+        "precision": 0.9399,
+        "recall": 0.9976,
+        "f1": 0.9679,
+        "support": 423
       },
       "focused": {
-        "precision": 0.9958,
-        "recall": 1.0,
-        "f1": 0.9979,
-        "support": 469
+        "precision": 0.9992,
+        "recall": 0.9792,
+        "f1": 0.9891,
+        "support": 1251
       },
       "confused": {
-        "precision": 0.6883,
-        "recall": 0.8763,
-        "f1": 0.771,
-        "support": 194
+        "precision": 0.7068,
+        "recall": 0.967,
+        "f1": 0.8167,
+        "support": 182
       },
       "neutral": {
-        "precision": 0.5948,
-        "recall": 0.5509,
-        "f1": 0.572,
-        "support": 746
+        "precision": 0.4829,
+        "recall": 0.5853,
+        "f1": 0.5292,
+        "support": 774
       },
       "angry": {
-        "precision": 0.5134,
-        "recall": 0.5433,
-        "f1": 0.5279,
-        "support": 600
+        "precision": 0.4381,
+        "recall": 0.459,
+        "f1": 0.4483,
+        "support": 586
       },
       "surprised": {
-        "precision": 0.6304,
-        "recall": 0.7044,
-        "f1": 0.6653,
-        "support": 477
+        "precision": 0.6732,
+        "recall": 0.6923,
+        "f1": 0.6826,
+        "support": 494
       }
-    },
-    "confusion_matrix": [
-      [
-        760,
-        1,
-        1,
-        26,
-        119,
-        126,
-        50
-      ],
-      [
-        0,
-        484,
-        0,
-        0,
-        0,
-        0,
-        0
-      ],
-      [
-        0,
-        0,
-        469,
-        0,
-        0,
-        0,
-        0
-      ],
-      [
-        5,
-        0,
-        0,
-        170,
-        10,
-        8,
-        1
-      ],
-      [
-        109,
-        0,
-        0,
-        22,
-        411,
-        121,
-        83
-      ],
-      [
-        78,
-        0,
-        1,
-        21,
-        111,
-        326,
-        63
-      ],
-      [
-        39,
-        0,
-        0,
-        8,
-        40,
-        54,
-        336
-      ]
-    ]
+    }
   },
-  "timing_seconds": {
-    "load_s": 699.06,
-    "scale_s": 4.19,
-    "train_s": 157.93,
-    "eval_s": 0.92
-  }
+  "val_accuracy": 0.6591
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 
 from .config import (
     AI_DIR,
@@ -12,90 +13,142 @@ from .config import (
     BACKEND_START_COMMAND,
     FRONTEND_DIR,
     FRONTEND_START_COMMAND,
+    FRONTEND_URL,
 )
-from .logger import info, error, success
-from .process import run, start, clone_environment
-from .readiness import wait_for_ai, wait_for_backend, wait_for_frontend
+from .logger import info, error, banner, stage, format_elapsed, track_printer, init as init_logger
+from .process import run_parallel, start, clone_environment
+from .readiness import wait_for_all_services
 from .browser import open_application
 
 
-def run_healthcheck() -> None:
-    info("Running startup health check...")
+# ─────────────────────────────────────────────────────────────────────────
+# SECTION 1 — Preflight
+# Fail fast with a clear, actionable message if the environment itself isn't
+# set up, before spending any time launching subprocesses that would only
+# fail anyway.
+# ─────────────────────────────────────────────────────────────────────────
 
-    exit_code = run(
-        [str(VENV_PYTHON), str(STARTUP_HEALTHCHECK)],
-        cwd=PROJECT_ROOT,
-    )
+def preflight() -> None:
+    with stage("Preflight"):
+        problems: list[str] = []
 
-    if exit_code != 0:
-        error("Startup health check failed.")
-        raise SystemExit(exit_code)
+        if not VENV_PYTHON.exists():
+            problems.append(
+                f"Main virtual environment not found at {VENV_PYTHON}. "
+                "Create it with: py -3.12 -m venv .venv"
+            )
+        if not AI_START_SCRIPT.exists():
+            problems.append(f"AI start script not found at {AI_START_SCRIPT}.")
+        if not STARTUP_HEALTHCHECK.exists():
+            problems.append(f"Health check script not found at {STARTUP_HEALTHCHECK}.")
+        if not BACKEND_DIR.exists():
+            problems.append(f"Backend directory not found at {BACKEND_DIR}.")
+        if not FRONTEND_DIR.exists():
+            problems.append(f"Frontend directory not found at {FRONTEND_DIR}.")
 
-    success("Startup health check completed.")
+        if problems:
+            for problem in problems:
+                error(problem)
+            raise SystemExit(1)
+
+        info("All required paths verified.")
 
 
-def ensure_ai_environment() -> None:
-    info("Ensuring AI environment...")
+# ─────────────────────────────────────────────────────────────────────────
+# SECTION 2 — Parallel prep
+# Health Check (DB migrations, seed data, ML artifacts) and AI Environment
+# provisioning touch entirely different venvs and have no dependency on each
+# other, so they run concurrently instead of back-to-back. Output from each
+# is tagged so interleaved lines stay attributable to their source.
+# ─────────────────────────────────────────────────────────────────────────
 
-    exit_code = run(
-        [str(AI_START_SCRIPT), "--ensure-env"],
-        cwd=AI_DIR,
-    )
+def run_parallel_prep() -> None:
+    with stage("Health Check + AI Environment (parallel)"):
+        shared_env = clone_environment(PYTHONUNBUFFERED="1", ELEVATE_FORCE_COLOR="1")
 
-    if exit_code != 0:
-        error("Unable to prepare AI environment.")
-        raise SystemExit(exit_code)
+        jobs = {
+            "HEALTH": {
+                "command": [str(VENV_PYTHON), str(STARTUP_HEALTHCHECK)],
+                "cwd": PROJECT_ROOT,
+                "env": shared_env,
+                "on_line": track_printer("HEALTH", 0),
+            },
+            "AI-ENV": {
+                "command": [str(AI_START_SCRIPT), "--ensure-env"],
+                "cwd": AI_DIR,
+                "env": shared_env,
+                "on_line": track_printer("AI-ENV", 1),
+            },
+        }
 
-    success("AI environment ready.")
+        results = run_parallel(jobs)
+        failed = [name for name, code in results.items() if code != 0]
+        if failed:
+            raise RuntimeError(f"Failed track(s): {', '.join(failed)}")
 
+
+# ─────────────────────────────────────────────────────────────────────────
+# SECTION 3 — Launch services
+# Frontend has no dependencies at all, so it's started before this section
+# even begins (see main()). AI and backend only depend on the prep above,
+# not on each other, so both are started here and all three are health
+# checked together in one combined poll loop instead of one at a time.
+# ─────────────────────────────────────────────────────────────────────────
 
 def start_ai() -> None:
     info("Starting AI service...")
-
     env = clone_environment(PORT="7860")
-    return start(
-        [str(AI_START_SCRIPT)],
-        cwd=AI_DIR,
-        env=env,
-    )
+    return start([str(AI_START_SCRIPT)], cwd=AI_DIR, env=env)
 
 
 def start_backend() -> None:
     info("Starting backend...")
-
     env = clone_environment(PORT="5000")
-    return start(
-        BACKEND_START_COMMAND,
-        cwd=BACKEND_DIR,
-        env=env,
-    )
+    return start(BACKEND_START_COMMAND, cwd=BACKEND_DIR, env=env)
 
 
 def start_frontend() -> None:
     info("Starting frontend...")
+    return start(FRONTEND_START_COMMAND, cwd=FRONTEND_DIR)
 
-    return start(
-        FRONTEND_START_COMMAND,
-        cwd=FRONTEND_DIR,
-    )
 
+def launch_services() -> None:
+    with stage("Launch Services"):
+        start_ai()
+        start_backend()
+        start_frontend()
+        wait_for_all_services()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# SECTION 4 — Entry point
+# Ties the sections together in order and reports total elapsed time.
+# ─────────────────────────────────────────────────────────────────────────
 
 def main() -> int:
-    run_healthcheck()
-    ensure_ai_environment()
+    init_logger()
+    banner("ELEVATE", "Starting local development stack")
+    overall_start = time.monotonic()
 
-    ai = start_ai()
-    wait_for_ai()
+    try:
+        preflight()
 
-    backend = start_backend()
-    wait_for_backend()
+        # Zero dependencies — start now so it's warm well before anything
+        # else needs it, instead of waiting until the very end.
 
-    frontend = start_frontend()
-    wait_for_frontend()
+        run_parallel_prep()
+        launch_services()
+        open_application()
 
-    open_application()
-    
-    success("Elevate started successfully.")
+    except SystemExit as exc:
+        error("Startup aborted — see the failed stage above.")
+        return exc.code if isinstance(exc.code, int) else 1
+    except (TimeoutError, RuntimeError) as exc:
+        error(f"Startup failed: {exc}")
+        return 1
+
+    total = format_elapsed(time.monotonic() - overall_start)
+    banner("Elevate is ready", f"Total startup time: {total} — {FRONTEND_URL}")
     return 0
 
 

@@ -15,6 +15,16 @@ set "AI_PY=%AI_VENV%\Scripts\python.exe"
 set "PIP_DISABLE_PIP_VERSION_CHECK=1"
 set "AI_BOOTSTRAP_PY=python"
 
+REM ── Fast path ────────────────────────────────────────────────────────────
+REM serve mode is invoked on every startup, immediately after --ensure-env
+REM already verified the environment moments earlier. Re-importing torch,
+REM transformers, llama_cpp, etc. again here just to launch uvicorn wastes
+REM several seconds every time. If the venv already exists, trust that the
+REM orchestrator already ran --ensure-env and skip straight to serving.
+REM If the venv is missing (e.g. someone runs this script directly without
+REM ever ensuring the env), fall through to full provisioning as before.
+if /I "%MODE%"=="serve" if exist "%AI_PY%" goto :launch_server
+
 py -3.12 -c "import sys" >nul 2>&1
 if not errorlevel 1 set "AI_BOOTSTRAP_PY=py -3.12"
 
@@ -113,6 +123,7 @@ if /I "%MODE%"=="ensure" (
 	exit /b 0
 )
 
+:launch_server
 if "%PORT%"=="" set PORT=7860
 
 echo [AI] Running Topic AI service on http://127.0.0.1:%PORT%

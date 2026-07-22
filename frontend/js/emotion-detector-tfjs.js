@@ -867,17 +867,17 @@ export const emotionDetector = {
         // Crop to face region
         img = img.slice([sy, sx, 0], [sh, sw, 3]);
 
-        // Resize to 48×48
-        img = tf.image.resizeBilinear(img, [48, 48]);
+        // Resize to 96×96 — must match training IMG_SIZE in train_emotion_cnn_hf.py.
+        // Model now expects 3-channel RGB (grayscale_to_rgb was applied at train
+        // time so the pretrained MobileNetV3 backbone gets 3 channels), so we do
+        // NOT collapse to grayscale here anymore.
+        img = tf.image.resizeBilinear(img, [96, 96]);
 
-        // Grayscale: weighted average matching BT.601 — same as PIL.convert('L')
-        // Doing it with a matmul avoids the mean(2) which equally weights RGB
-        const weights = tf.tensor1d([0.299, 0.587, 0.114]);
-        img = img.mul(weights).sum(2); // [48, 48]
-
-        // Reshape to [1, 48, 48, 1]. 
-        // THE FIX: DO NOT .div(255.0)! The Python model was trained on raw 0-255 pixels!
-        img = img.expandDims(0).expandDims(-1).div(255.0);
+        // MobileNetV3's preprocess_input maps pixel values from [0,255] to
+        // [-1, 1]: x/127.5 - 1. This MUST match tf.keras.applications
+        // .mobilenet_v3.preprocess_input used in the training tf.data pipeline —
+        // do not use /255.0 (that was the old HOG/MLP model's convention).
+        img = img.expandDims(0).div(127.5).sub(1.0);
 
         return Array.from(emotionModel.predict(img).dataSync());
       });

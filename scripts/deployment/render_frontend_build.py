@@ -34,7 +34,7 @@ def report_emotion_tfjs_assets(repo_root: Path) -> int:
 
 
 def main() -> int:
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     target = repo_root / "frontend" / "js" / "runtime-config.js"
 
     api_base = normalize_api_base(os.environ.get("FRONTEND_API_BASE_URL", ""))

@@ -1,5 +1,4 @@
-"""
-run_migrations.py — standalone migration runner for Elevate.
+"""run_migrations.py — standalone migration runner for Elevate.
 
 Handles all DB states automatically:
   1. Brand-new DB: run full migration chain
@@ -7,7 +6,7 @@ Handles all DB states automatically:
   3. Corrupt state (alembic_version stamped but core tables missing): reset + full run
   4. Healthy tracked DB: normal upgrade head
 
-Usage:  .venv\\Scripts\\python.exe run_migrations.py
+Usage:  .venv\\Scripts\\python.exe scripts\\database\\run_migrations.py
 """
 from __future__ import annotations
 
@@ -15,7 +14,30 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# scripts/database/run_migrations.py -> parents[0]=database, [1]=scripts, [2]=project root
+ROOT = Path(__file__).resolve().parents[2]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+try:
+    from scripts.bootstrap.logger import info, success, warning, error, init as init_logger
+except Exception:
+    def init_logger() -> None:
+        return None
+
+    def info(message: str) -> None:
+        print(f"[migrate] {message}")
+
+    def success(message: str) -> None:
+        print(f"[migrate] {message}")
+
+    def warning(message: str) -> None:
+        print(f"[migrate] Warning: {message}")
+
+    def error(message: str) -> None:
+        print(f"[migrate] ERROR: {message}")
+
 
 # These tables MUST exist for the baseline stamp to be valid.
 # If alembic_version says we're at a revision but these don't exist,
@@ -29,7 +51,7 @@ BASELINE_STAMP_REVISION = "f4d91c2e7b11"
 def _load_dotenv() -> None:
     env_file = ROOT / ".env"
     if not env_file.exists():
-        print(f"[migrate] No .env at {env_file} — using system env.")
+        info(f"No .env at {env_file} — using system env.")
         return
     try:
         with open(env_file, encoding="utf-8") as f:
@@ -42,9 +64,9 @@ def _load_dotenv() -> None:
                 val = val.strip().strip('"').strip("'")
                 if key and key not in os.environ:
                     os.environ[key] = val
-        print("[migrate] Loaded environment from .env")
+        info("Loaded environment from .env")
     except Exception as exc:
-        print(f"[migrate] Warning: could not load .env: {exc}")
+        warning(f"could not load .env: {exc}")
 
 
 def _make_alembic_cfg(db_url: str):
@@ -80,9 +102,9 @@ def _clear_alembic_version(engine) -> None:
     try:
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM alembic_version"))
-        print("[migrate] Cleared alembic_version table.")
+        info("Cleared alembic_version table.")
     except Exception as exc:
-        print(f"[migrate] Warning: could not clear alembic_version: {exc}")
+        warning(f"could not clear alembic_version: {exc}")
 
 
 def _drop_orphan_tables(engine, tables: set[str]) -> None:
@@ -98,12 +120,13 @@ def _drop_orphan_tables(engine, tables: set[str]) -> None:
         with engine.begin() as conn:
             for t in to_drop:
                 conn.execute(text(f'DROP TABLE IF EXISTS "{t}" CASCADE'))
-                print(f"[migrate] Dropped orphan table: {t}")
+                info(f"Dropped orphan table: {t}")
     except Exception as exc:
-        print(f"[migrate] Warning: could not drop orphan tables: {exc}")
+        warning(f"could not drop orphan tables: {exc}")
 
 
 def main() -> int:
+    init_logger()
     _load_dotenv()
 
     if str(ROOT) not in sys.path:
@@ -116,7 +139,7 @@ def main() -> int:
     ).strip()
 
     if not db_url:
-        print("[migrate] ERROR: DATABASE_URL not set.")
+        error("DATABASE_URL not set.")
         return 1
 
     try:
@@ -127,13 +150,13 @@ def main() -> int:
             db_url = db_url.replace("postgres://", "postgresql+psycopg2://", 1)
 
     masked = db_url[:40] + "..." if len(db_url) > 40 else db_url
-    print(f"[migrate] Database URL: {masked}")
+    info(f"Database URL: {masked}")
 
     try:
         from alembic import command as alembic_command
         from sqlalchemy import create_engine
     except ImportError as exc:
-        print(f"[migrate] ERROR: missing package — {exc}")
+        error(f"missing package — {exc}")
         return 1
 
     import logging
@@ -146,7 +169,7 @@ def main() -> int:
         with engine.connect():
             pass
     except Exception as exc:
-        print(f"[migrate] ERROR: Cannot connect to database: {exc}")
+        error(f"Cannot connect to database: {exc}")
         return 1
 
     alembic_cfg = _make_alembic_cfg(db_url)
@@ -157,40 +180,39 @@ def main() -> int:
     current_rev = _get_current_revision(engine) if has_alembic else None
     has_core = CORE_TABLES.issubset(tables)
 
-    print(f"[migrate] Tables found: {len(tables)}")
-    print(f"[migrate] Core tables present: {has_core}")
-    print(f"[migrate] Alembic revision: {current_rev or '(none)'}")
+    info(f"Tables found: {len(tables)}")
+    info(f"Core tables present: {has_core}")
+    info(f"Alembic revision: {current_rev or '(none)'}")
 
     # ── Decision logic ────────────────────────────────────────────────────────
 
     if current_rev and has_core:
         # HAPPY PATH: DB is tracked and has core tables — normal upgrade
-        print(f"[migrate] Database is healthy at revision {current_rev}.")
+        info(f"Database is healthy at revision {current_rev}.")
 
     elif current_rev and not has_core:
         # CORRUPT STATE: stamped but core tables are missing
-        # (This is exactly what happened — we stamped f4d91c2e7b11 but users doesn't exist)
-        print(
-            f"[migrate] CORRUPT STATE detected: alembic says {current_rev} "
+        warning(
+            f"CORRUPT STATE detected: alembic says {current_rev} "
             f"but core tables (users, schools, questions) are MISSING."
         )
-        print("[migrate] Resetting alembic_version and dropping orphan tables...")
+        info("Resetting alembic_version and dropping orphan tables...")
         _clear_alembic_version(engine)
         _drop_orphan_tables(engine, tables - {"alembic_version"})
-        print("[migrate] Will run full migration chain from scratch.")
+        info("Will run full migration chain from scratch.")
 
     elif not current_rev and has_core:
         # UNTRACKED DB: all tables exist but alembic never managed them
         # Stamp to baseline so only NEW migrations run
-        print(
-            f"[migrate] Untracked database: core tables exist but no alembic revision.\n"
-            f"[migrate] Stamping baseline: {BASELINE_STAMP_REVISION}"
+        info(
+            f"Untracked database: core tables exist but no alembic revision. "
+            f"Stamping baseline: {BASELINE_STAMP_REVISION}"
         )
         try:
             alembic_command.stamp(alembic_cfg, BASELINE_STAMP_REVISION)
-            print("[migrate] Stamped. Now applying only new migrations...")
+            info("Stamped. Now applying only new migrations...")
         except Exception as exc:
-            print(f"[migrate] ERROR stamping: {exc}")
+            error(f"stamping: {exc}")
             return 1
 
     else:
@@ -200,17 +222,17 @@ def main() -> int:
         orphans = tables - {"alembic_version"}
         if orphans:
             _drop_orphan_tables(engine, orphans)
-        print("[migrate] Empty database. Running full migration chain...")
+        info("Empty database. Running full migration chain...")
 
     # ── Apply migrations ──────────────────────────────────────────────────────
-    print("[migrate] Running: alembic upgrade head ...")
+    info("Running: alembic upgrade head ...")
     try:
         alembic_command.upgrade(alembic_cfg, "head")
-        print("[migrate] SUCCESS — database schema is up to date.")
+        success("Database schema is up to date.")
         return 0
     except Exception as exc:
         err = str(exc)
-        print(f"[migrate] FAILED: {err[:500]}")
+        error(f"FAILED: {err[:500]}")
         return 1
 
 

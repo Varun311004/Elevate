@@ -1,10 +1,25 @@
 import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'backend'))
+from pathlib import Path
+
+# scripts/database/seed_users.py -> parents[0]=database, [1]=scripts, [2]=project root
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+try:
+    from scripts.bootstrap.logger import success, init as init_logger
+except Exception:
+    def init_logger() -> None:
+        return None
+
+    def success(message: str) -> None:
+        print(message)
 
 from backend.config import get_config
 from backend.models import db, User
 from backend.security import hash_password
+
+init_logger()
 
 config = get_config('development')
 
@@ -28,7 +43,7 @@ with app.app_context():
             is_verified=True
         )
         db.session.add(admin)
-        print(f'Created admin user: {admin_email} (password: admin123)')
+        success(f'Created admin user: {admin_email} (password: admin123)')
 
     # Create student user
     student_email = 'student@elevate.com'
@@ -42,7 +57,7 @@ with app.app_context():
             is_verified=True
         )
         db.session.add(student)
-        print(f'Created student user: {student_email} (password: student123)')
+        success(f'Created student user: {student_email} (password: student123)')
 
     # Create teacher user
     teacher_email = 'teacher@elevate.com'
@@ -56,7 +71,7 @@ with app.app_context():
             is_verified=True
         )
         db.session.add(teacher)
-        print(f'Created teacher user: {teacher_email} (password: teacher123)')
+        success(f'Created teacher user: {teacher_email} (password: teacher123)')
 
     db.session.commit()
-    print('All test users created successfully!')
+    success('All test users created successfully!')

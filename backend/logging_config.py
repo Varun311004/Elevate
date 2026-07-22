@@ -9,60 +9,65 @@ from flask import g, request, has_request_context
 
 class RequestIdFilter(logging.Filter):
     """Add request ID to log records."""
-    
+
     def filter(self, record):
         if has_request_context():
-            record.request_id = getattr(g, 'request_id', 'N/A')
-            record.method = request.method if request else 'N/A'
-            record.path = request.path if request else 'N/A'
+            record.request_id = getattr(g, "request_id", "N/A")
+            record.method = request.method if request else "N/A"
+            record.path = request.path if request else "N/A"
         else:
-            record.request_id = 'N/A'
-            record.method = 'N/A'
-            record.path = 'N/A'
+            record.request_id = "N/A"
+            record.method = "N/A"
+            record.path = "N/A"
         return True
+
+class HealthCheckFilter(logging.Filter):
+    """Suppress noisy Werkzeug health-check access log lines."""
+
+    def filter(self, record):
+        return "GET /health" not in record.getMessage()
 
 
 def configure_logging(app):
     """Configure structured logging for the Flask app."""
-    
+
     # Remove default Flask handlers
     app.logger.handlers.clear()
-    
+
     # Set log level based on environment
-    log_level = logging.DEBUG if app.config.get('DEBUG') else logging.INFO
+    log_level = logging.DEBUG if app.config.get("DEBUG") else logging.INFO
     app.logger.setLevel(log_level)
-    
+
     # Create formatter
     formatter = logging.Formatter(
-        '[%(asctime)s] %(levelname)s [%(request_id)s] %(method)s %(path)s - %(name)s: %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        "[%(asctime)s] %(levelname)s [%(request_id)s] %(method)s %(path)s - %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
-    
+
     # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(log_level)
     console_handler.setFormatter(formatter)
     console_handler.addFilter(RequestIdFilter())
     app.logger.addHandler(console_handler)
-    
-    # File handler (rotating) - only in production.
+
+    # Suppress noisy health-check lines from Werkzeug's access log
+    logging.getLogger("werkzeug").addFilter(HealthCheckFilter())
+
+    # File handler (rotating) — only in production.
     # Render/runtime containers may not have this directory pre-created.
-    if not app.config.get('DEBUG') and not app.config.get('TESTING'):
+    if not app.config.get("DEBUG") and not app.config.get("TESTING"):
         try:
-            log_path = os.path.join('logs', 'elevate.log')
+            log_path = os.path.join("logs", "elevate.log")
             os.makedirs(os.path.dirname(log_path), exist_ok=True)
-            file_handler = RotatingFileHandler(
-                log_path,
-                maxBytes=10485760,  # 10MB
-                backupCount=10
-            )
+            file_handler = RotatingFileHandler(log_path, maxBytes=10_485_760, backupCount=10)
             file_handler.setLevel(logging.INFO)
             file_handler.setFormatter(formatter)
             file_handler.addFilter(RequestIdFilter())
             app.logger.addHandler(file_handler)
         except Exception as exc:
             # Do not block startup if file logging cannot be configured.
-            app.logger.warning(f"File logging disabled: {exc}")
+            app.logger.warning("File logging disabled: %s", exc)
     
     # Add request ID to each request
     @app.before_request

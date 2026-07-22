@@ -5,6 +5,10 @@ This script is intentionally idempotent:
 - Seeds users only when missing.
 - Ensures question bank size is healthy.
 - Supports optional strict rebuild mode via env var.
+
+Responsibility boundary: this file only verifies/repairs application state
+(DB schema, seed data, question bank, ML artifacts). It has no opinion about
+how things are printed — all console styling lives in scripts/bootstrap/logger.py.
 """
 
 from __future__ import annotations
@@ -15,8 +19,65 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Needed so `from scripts.bootstrap.logger import ...` resolves no matter how
+# this script is invoked (it is normally launched with an absolute path via
+# subprocess, which does not put PROJECT_ROOT on sys.path by itself).
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+try:
+    from scripts.bootstrap.logger import info, success, warning, error, stage, init as init_logger
+except Exception:
+    # Defensive fallback: never let a logging import break the health check itself.
+    def init_logger() -> None:
+        return None
+
+    def info(message: str) -> None:
+        print(f"[BOOTSTRAP] {message}")
+
+    def success(message: str) -> None:
+        print(f"[BOOTSTRAP] {message}")
+
+    def warning(message: str) -> None:
+        print(f"[BOOTSTRAP] WARNING: {message}")
+
+    def error(message: str) -> None:
+        print(f"[BOOTSTRAP] ERROR: {message}")
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def stage(name: str):
+        print(f"[BOOTSTRAP] -- {name} --")
+        yield
+
+
 PYTHON_EXE = ROOT / ".venv" / "Scripts" / "python.exe"
 _APP_CACHE = None
+EMOTION_DATASET_DIR = ROOT / "dataset"
+EMOTION_CLASS_FOLDERS = [
+    "happy",
+    "bored",
+    "focused",
+    "confused",
+    "neutral",
+    "angry",
+    "surprise",
+]
+
+# ---------------------------------------------------------------------------
+# Script locations (kept in one place so the folder layout only needs to be
+# updated here if scripts/ is ever reorganized again).
+# ---------------------------------------------------------------------------
+RUN_MIGRATIONS_SCRIPT = ROOT / "scripts" / "database" / "run_migrations.py"
+SEED_USERS_SCRIPT = "scripts/database/seed_users.py"
+BUILD_INTERACTION_DATASET_SCRIPT = "scripts/datasets/build_interaction_dataset.py"
+FIT_BKT_SCRIPT = "scripts/training/fit_bkt_model.py"
+TRAIN_DKT_SCRIPT = "scripts/training/train_dkt_model.py"
+TRAIN_EMOTION_SCRIPT = "scripts/training/train_emotion_cnn_hf.py"
+TRAIN_AT_RISK_SCRIPT = "scripts/training/train_at_risk_predictor.py"
+TRAIN_STRICT_PIPELINE_SCRIPT = "scripts/training/train_strict_pipeline.py"
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +101,7 @@ def _load_dotenv() -> None:
                 if key and key not in os.environ:
                     os.environ[key] = val
     except Exception as exc:
-        print(f"[BOOTSTRAP] Warning: could not load .env: {exc}")
+        warning(f"Could not load .env: {exc}")
 
 
 def _run_migrations() -> None:
@@ -52,14 +113,18 @@ def _run_migrations() -> None:
     """
     _load_dotenv()
 
-    migration_script = ROOT / "run_migrations.py"
-    if not migration_script.exists():
-        print("[BOOTSTRAP] Warning: run_migrations.py not found — skipping auto-migration.")
-        return
+    if not RUN_MIGRATIONS_SCRIPT.exists():
+        # Previously this was a silent warning-and-skip. Skipping migrations
+        # silently means the app can boot against a stale schema, which is
+        # worse than failing loudly here.
+        raise RuntimeError(
+            f"run_migrations.py not found at {RUN_MIGRATIONS_SCRIPT}. "
+            "Database migrations cannot be skipped — fix the path or restore the file."
+        )
 
-    print("[BOOTSTRAP] Running database migrations (alembic upgrade head)...")
+    info("Running database migrations (alembic upgrade head)...")
     result = subprocess.run(
-        [str(PYTHON_EXE), str(migration_script)],
+        [str(PYTHON_EXE), str(RUN_MIGRATIONS_SCRIPT)],
         cwd=ROOT,
         env=os.environ.copy(),
     )
@@ -68,11 +133,11 @@ def _run_migrations() -> None:
             "Database migration failed. "
             "Check your DATABASE_URL in .env and that the PostgreSQL server is reachable."
         )
-    print("[BOOTSTRAP] Migrations applied successfully.")
+    success("Migrations applied successfully.")
 
 
 def _run(command: list[str], description: str) -> None:
-    print(f"[BOOTSTRAP] {description}")
+    info(description)
     completed = subprocess.run(command, cwd=ROOT)
     if completed.returncode != 0:
         raise RuntimeError(f"Failed step: {description}")
@@ -141,10 +206,10 @@ def _read_counts() -> tuple[int, int]:
 
 def _ensure_users(user_count: int) -> None:
     if user_count > 0:
-        print(f"[BOOTSTRAP] Users present: {user_count}. Skipping user seed.")
+        success(f"Users present: {user_count}. Skipping user seed.")
         return
 
-    _run([str(PYTHON_EXE), "seed_users.py"], "Seeding default users")
+    _run([str(PYTHON_EXE), SEED_USERS_SCRIPT], "Seeding default users")
 
 
 def _ensure_dependencies() -> None:
@@ -166,7 +231,7 @@ def _ensure_dependencies() -> None:
         if not recoverable:
             raise
 
-        print(f"[BOOTSTRAP] Dependency issue detected: {message}")
+        warning(f"Dependency issue detected: {message}")
         _bootstrap_pip()
 
         _run(
@@ -237,9 +302,7 @@ def _ensure_questions(question_count: int) -> None:
         return
 
     if question_count >= min_questions:
-        print(
-            f"[BOOTSTRAP] Question bank healthy: {question_count} questions (target >= {min_questions})."
-        )
+        success(f"Question bank healthy: {question_count} questions (target >= {min_questions}).")
         return
 
     # Non-destructive top-up path for normal startup.
@@ -267,7 +330,7 @@ def _ensure_interaction_dataset() -> None:
 
     command = [
         str(PYTHON_EXE),
-        "scripts/build_interaction_dataset.py",
+        BUILD_INTERACTION_DATASET_SCRIPT,
         "--if-stale",
         "--max-age-hours",
         str(max_age_hours),
@@ -282,7 +345,7 @@ def _ensure_interaction_dataset() -> None:
     if _is_truthy_env("ELEVATE_STRICT_MODE", "0"):
         command = [
             str(PYTHON_EXE),
-            "scripts/build_interaction_dataset.py",
+            BUILD_INTERACTION_DATASET_SCRIPT,
             "--min-events",
             str(min_events),
             "--min-users",
@@ -304,7 +367,7 @@ def _run_local_strict_pipeline() -> None:
     _run(
         [
             str(PYTHON_EXE),
-            "scripts/train_strict_pipeline.py",
+            TRAIN_STRICT_PIPELINE_SCRIPT,
             "--min-emotion-accuracy",
             min_emotion_acc,
             "--min-emotion-macro-f1",
@@ -321,7 +384,7 @@ def _run_remote_hf_strict_pipeline() -> None:
         sys.path.insert(0, str(ROOT))
     from backend.hf_training_service import trigger_and_wait_hf_strict_training
 
-    print("[BOOTSTRAP] Triggering strict HF training via backend service client ...")
+    info("Triggering strict HF training via backend service client ...")
     result = trigger_and_wait_hf_strict_training()
     if not result.get("ok"):
         raise RuntimeError(
@@ -340,7 +403,7 @@ def _run_remote_hf_strict_pipeline() -> None:
         )
 
     summary = payload.get("summary")
-    print(f"[BOOTSTRAP] HF strict training succeeded. summary={summary}")
+    success(f"HF strict training succeeded. summary={summary}")
 
 
 def _run_strict_pipeline_if_enabled() -> bool:
@@ -370,11 +433,11 @@ def _ensure_bkt_model() -> None:
 
     latest_model = model_dir / "bkt_model_latest.pkl"
     if latest_model.exists():
-        print(f"[BOOTSTRAP] BKT model exists: {latest_model}. Skipping retraining.")
+        success(f"BKT model exists: {latest_model}. Skipping retraining.")
         return
 
     _run(
-        [str(PYTHON_EXE), "scripts/fit_bkt_model.py"],
+        [str(PYTHON_EXE), FIT_BKT_SCRIPT],
         "Training BKT EM parameters on interaction dataset",
     )
 
@@ -386,20 +449,28 @@ def _ensure_dkt_model() -> None:
 
     latest_model = model_dir / "dkt_model_latest.pt"
     if latest_model.exists():
-        print(f"[BOOTSTRAP] DKT model exists: {latest_model}. Skipping retraining.")
+        success(f"DKT model exists: {latest_model}. Skipping retraining.")
         return
 
-    print(
-    "[BOOTSTRAP] WARNING: DKT model not found."
+    torch_probe = subprocess.run(
+        [str(PYTHON_EXE), "-c", "import torch"],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
     )
-    print(
-        "[BOOTSTRAP] Skipping DKT training during startup."
-    )
-    print(
-        "[BOOTSTRAP] Run scripts/train_dkt_model.py manually if a new DKT model is required."
-    )
+    if torch_probe.returncode != 0:
+        warning(
+            "torch is not installed in the main virtual environment. "
+            "Skipping DKT training so backend startup can continue. "
+            "Install torch in .venv to enable DKT startup training."
+        )
+        return
 
-    return
+    _run(
+        [str(PYTHON_EXE), TRAIN_DKT_SCRIPT],
+        "Training DKT model",
+    )
 
 
 def _ensure_emotion_model() -> None:
@@ -407,12 +478,31 @@ def _ensure_emotion_model() -> None:
     tfjs_model = ROOT / "frontend" / "js" / "emotion_tfjs" / "model.json"
     metrics_info = ROOT / "backend" / "ai_models" / "emotion_model_info.json"
     if tfjs_model.exists() and metrics_info.exists():
-        print(f"[BOOTSTRAP] Emotion TFJS model exists: {tfjs_model}. Skipping retraining.")
+        success(f"Emotion TFJS model exists: {tfjs_model}. Skipping retraining.")
+        return
+
+    if not EMOTION_DATASET_DIR.exists():
+        warning(
+            f"Emotion dataset folder not found at {EMOTION_DATASET_DIR}. "
+            "Skipping emotion model training so backend startup can continue."
+        )
+        return
+
+    missing_folders = [
+        folder
+        for folder in EMOTION_CLASS_FOLDERS
+        if not (EMOTION_DATASET_DIR / folder).exists()
+    ]
+    if missing_folders:
+        warning(
+            "Emotion dataset is incomplete. Missing class folders: "
+            f"{', '.join(missing_folders)}. Skipping emotion model training."
+        )
         return
 
     _run(
-        [str(PYTHON_EXE), "scripts/train_emotion_fast.py"],
-        "Training HOG+MLP emotion model (TF.js export)",
+        [str(PYTHON_EXE), TRAIN_EMOTION_SCRIPT],
+        "Training CNN emotion model (TF.js export)",
     )
 
 
@@ -423,11 +513,11 @@ def _ensure_at_risk_model() -> None:
     model_dir.mkdir(parents=True, exist_ok=True)
 
     if latest_manifest.exists():
-        print(f"[BOOTSTRAP] At-risk model exists: {latest_manifest}. Skipping retraining.")
+        success(f"At-risk model exists: {latest_manifest}. Skipping retraining.")
         return
 
     _run(
-        [str(PYTHON_EXE), "scripts/train_at_risk_predictor.py"],
+        [str(PYTHON_EXE), TRAIN_AT_RISK_SCRIPT],
         "Training at-risk predictor (Task 7)",
     )
 
@@ -437,37 +527,39 @@ def _ensure_at_risk_model() -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    init_logger()
+
     if not PYTHON_EXE.exists():
-        print("[BOOTSTRAP] Virtual environment python not found.")
+        error("Virtual environment python not found.")
         return 1
 
     try:
-        # ── Step 1: Always migrate DB schema FIRST ────────────────────────────
-        # Idempotent — Alembic no-ops when schema is already at head.
-        # MUST run before any ORM query so all columns (is_disabled, etc.) exist.
-        _run_migrations()
+        with stage("Database Migrations"):
+            # Idempotent — Alembic no-ops when schema is already at head.
+            # MUST run before any ORM query so all columns (is_disabled, etc.) exist.
+            _run_migrations()
 
         _assert_gemini_key_if_required()
-        _ensure_dependencies()
-        users_before, questions_before = _read_counts()
-        print(
-            f"[BOOTSTRAP] Current data status -> users: {users_before}, questions: {questions_before}"
-        )
 
-        _ensure_users(users_before)
-        _ensure_questions(questions_before)
-        _ensure_interaction_dataset()
-        strict_ran = _run_strict_pipeline_if_enabled()
-        if not strict_ran:
-            _ensure_models_non_strict()
+        with stage("Dependencies & Data"):
+            _ensure_dependencies()
+            users_before, questions_before = _read_counts()
+            info(f"Current data status -> users: {users_before}, questions: {questions_before}")
+
+            _ensure_users(users_before)
+            _ensure_questions(questions_before)
+            _ensure_interaction_dataset()
+
+        with stage("Model Artifacts"):
+            strict_ran = _run_strict_pipeline_if_enabled()
+            if not strict_ran:
+                _ensure_models_non_strict()
 
         users_after, questions_after = _read_counts()
-        print(
-            f"[BOOTSTRAP] Final data status   -> users: {users_after}, questions: {questions_after}"
-        )
+        info(f"Final data status   -> users: {users_after}, questions: {questions_after}")
         return 0
     except Exception as exc:
-        print(f"[BOOTSTRAP] ERROR: {exc}")
+        error(str(exc))
         return 1
 
 

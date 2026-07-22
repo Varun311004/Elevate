@@ -20,16 +20,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from PIL import Image
 import numpy as np
 import tensorflow as tf
 from sklearn.metrics import classification_report
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from sklearn.utils.class_weight import compute_class_weight
+import imagehash
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DATASET_DIR = ROOT / "dataset"
 AI_MODELS_DIR = ROOT / "backend" / "ai_models"
+FRONTEND_DIR = ROOT / "frontend"
 
 CLASS_NAMES = ["happy", "bored", "focused", "confused", "neutral", "angry", "surprised"]
 CLASS_ALIASES = {
@@ -46,11 +49,12 @@ CLASS_FOLDER_ALIASES = {
     "surprised": ["surprised", "surprise"],
 }
 
-IMG_SIZE = (48, 48)
+IMG_SIZE = (96, 96)
 BATCH_SIZE = int(os.environ.get("ELEVATE_EMOTION_BATCH_SIZE", "32"))
 EPOCHS_HEAD = int(os.environ.get("ELEVATE_EMOTION_EPOCHS_HEAD", "18"))
 EPOCHS_FINETUNE = int(os.environ.get("ELEVATE_EMOTION_EPOCHS_FINETUNE", "14"))
-FINE_TUNE_AT = int(os.environ.get("ELEVATE_EMOTION_FINE_TUNE_AT", "220"))
+EARLY_STOP_PATIENCE = int(os.environ.get("ELEVATE_EMOTION_EARLY_STOP_PATIENCE", "5"))
+FINE_TUNE_AT = 100
 SEED = int(os.environ.get("ELEVATE_EMOTION_SEED", "42"))
 MIN_PER_CLASS = int(os.environ.get("ELEVATE_EMOTION_MIN_PER_CLASS", "50"))
 
@@ -110,28 +114,50 @@ def _collect_paths() -> Tuple[List[str], np.ndarray]:
     return all_files, np.asarray(all_labels, dtype=np.int32)
 
 
+def _group_key_for_file(path: str, phash_cache: dict) -> str:
+    """
+    Returns a group id such that near-duplicate frames (e.g. consecutive
+    frames pulled from the same short webcam recording session) always
+    get the same id, and therefore always land in the same split.
+ 
+    Perceptual hash with a small Hamming-distance tolerance catches
+    near-duplicates that a random/stratified split would otherwise
+    scatter across train/val/test — which is what was silently inflating
+    the 'bored'/'focused' scores to ~1.0 F1.
+    """
+    img_hash = imagehash.phash(Image.open(path).convert("L"))
+    phash_cache[path] = img_hash
+ 
+    # Bucket by a coarse version of the hash (first 32 bits) so that
+    # near-identical frames collapse to the same bucket even with minor
+    # compression/lighting noise between frames.
+    return str(img_hash)[:8]
+
+
 def _split_dataset(files: List[str], labels: np.ndarray) -> DatasetSplit:
-    train_files, test_files, train_labels, test_labels = train_test_split(
-        files,
-        labels,
-        test_size=0.15,
-        random_state=SEED,
-        stratify=labels,
+    phash_cache: dict = {}
+    groups = np.array([_group_key_for_file(f, phash_cache) for f in files])
+ 
+    # First carve off test, then val, splitting by GROUP not by file.
+    gss_test = GroupShuffleSplit(n_splits=1, test_size=0.15, random_state=SEED)
+    trainval_idx, test_idx = next(gss_test.split(files, labels, groups=groups))
+ 
+    trainval_files = [files[i] for i in trainval_idx]
+    trainval_labels = labels[trainval_idx]
+    trainval_groups = groups[trainval_idx]
+ 
+    gss_val = GroupShuffleSplit(n_splits=1, test_size=0.15, random_state=SEED)
+    train_idx, val_idx = next(
+        gss_val.split(trainval_files, trainval_labels, groups=trainval_groups)
     )
-    train_files, val_files, train_labels, val_labels = train_test_split(
-        train_files,
-        train_labels,
-        test_size=0.15,
-        random_state=SEED,
-        stratify=train_labels,
-    )
+ 
     return DatasetSplit(
-        train_files=train_files,
-        val_files=val_files,
-        test_files=test_files,
-        train_labels=np.asarray(train_labels, dtype=np.int32),
-        val_labels=np.asarray(val_labels, dtype=np.int32),
-        test_labels=np.asarray(test_labels, dtype=np.int32),
+        train_files=[trainval_files[i] for i in train_idx],
+        val_files=[trainval_files[i] for i in val_idx],
+        test_files=[files[i] for i in test_idx],
+        train_labels=trainval_labels[train_idx].astype(np.int32),
+        val_labels=trainval_labels[val_idx].astype(np.int32),
+        test_labels=labels[test_idx].astype(np.int32),
     )
 
 
@@ -139,11 +165,8 @@ def _decode_image(path: tf.Tensor, label: tf.Tensor) -> Tuple[tf.Tensor, tf.Tens
     img = tf.io.read_file(path)
     img = tf.image.decode_image(img, channels=1, expand_animations=False)
     img = tf.image.resize(img, IMG_SIZE, method=tf.image.ResizeMethod.BILINEAR)
-    img = tf.cast(img, tf.float32)
-    
-    # THE CRITICAL FIX: Normalize training data to [0, 1]
-    img = img / 255.0
-    
+    # Pretrained ImageNet backbones expect 3 channels — replicate grayscale.
+    img = tf.image.grayscale_to_rgb(img)
     return img, label
 
 
@@ -158,37 +181,36 @@ def _build_tf_dataset(files: List[str], labels: np.ndarray, training: bool) -> t
             tf.keras.layers.RandomRotation(0.08),
             tf.keras.layers.RandomZoom(0.12),
             tf.keras.layers.RandomContrast(0.15),
+            tf.keras.layers.RandomBrightness(0.1),   # webcams vary in exposure
         ])
         ds = ds.map(lambda x, y: (augment(x, training=True), y), num_parallel_calls=tf.data.AUTOTUNE)
+    ds = ds.map(
+        lambda x, y: (tf.keras.applications.mobilenet_v3.preprocess_input(x), y),
+        num_parallel_calls=tf.data.AUTOTUNE,
+    )
     ds = ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
     return ds
 
 
-def _build_model(num_classes: int) -> tf.keras.Model:
-    model = tf.keras.Sequential([
-        tf.keras.Input(shape=(IMG_SIZE[0], IMG_SIZE[1], 1)), # EXPLICIT INPUT LAYER FOR TFJS
-        tf.keras.layers.Conv2D(32, (3,3), activation='relu'),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPooling2D((2,2)),
-        tf.keras.layers.Dropout(0.25),
-        
-        tf.keras.layers.Conv2D(64, (3,3), activation='relu'),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPooling2D((2,2)),
-        tf.keras.layers.Dropout(0.25),
-        
-        tf.keras.layers.Conv2D(128, (3,3), activation='relu'),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPooling2D((2,2)),
-        tf.keras.layers.Dropout(0.25),
-        
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(256, activation='relu'),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.Dropout(0.5),
-        tf.keras.layers.Dense(num_classes, activation='softmax')
-    ])
-    return model
+def _build_model(num_classes: int) -> Tuple[tf.keras.Model, tf.keras.Model]:
+    """Returns (full_model, backbone) so main() can freeze/unfreeze the backbone."""
+    backbone = tf.keras.applications.MobileNetV3Small(
+        input_shape=(IMG_SIZE[0], IMG_SIZE[1], 3),
+        include_top=False,
+        weights="imagenet",
+        pooling="avg",
+        minimalistic=True,   # smaller export, fewer squeeze-excite blocks
+    )
+    backbone.trainable = False  # frozen for the head-training phase
+ 
+    inputs = tf.keras.Input(shape=(IMG_SIZE[0], IMG_SIZE[1], 3))
+    x = backbone(inputs, training=False)
+    x = tf.keras.layers.Dense(128, activation="relu")(x)
+    x = tf.keras.layers.Dropout(0.4)(x)
+    outputs = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+ 
+    model = tf.keras.Model(inputs, outputs)
+    return model, backbone
 
 
 def _to_class_weight(labels: np.ndarray) -> Dict[int, float]:
@@ -226,6 +248,79 @@ def _evaluate(model: tf.keras.Model, ds: tf.data.Dataset, y_true: np.ndarray) ->
         "per_class": per_class,
     }
 
+def _write_tfjs_layers_model(model: "tf.keras.Model", tfjs_out_dir: Path) -> None:
+    """Write a Keras model in TF.js LayersModel format — no external packages needed.
+
+    Replaces the tensorflowjs Python CLI entirely.  tensorflowjs 4.15.0 is
+    fundamentally incompatible with TF 2.16.x: its converter unconditionally
+    imports tensorflow_decision_forests, tensorflow_hub, and jax — all of
+    which either cannot be installed alongside TF 2.16 or crash on import.
+
+    This function produces the identical output using only:
+      - json  (stdlib)
+      - numpy (already imported)
+      - tensorflow (already imported)
+
+    Output
+    ------
+    ``<tfjs_out_dir>/model.json``
+        Model topology (Keras config) + weights manifest.
+    ``<tfjs_out_dir>/group1-shard1of1.bin``
+        All weights concatenated as little-endian float32.
+
+    The frontend’s ``_loadTfjsModel()`` already patches
+    ``batch_shape → batchInputShape`` before calling ``tf.io.fromMemory()``,
+    so we don’t need to handle that here.
+    """
+    tfjs_out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Collect weights
+    weight_specs: list[dict] = []
+    weight_bytes_parts: list[bytes] = []
+    for w in model.weights:
+        arr = w.numpy().astype(np.float32)
+        name = w.name[:-2] if w.name.endswith(":0") else w.name
+        weight_specs.append({"name": name, "shape": list(arr.shape), "dtype": "float32"})
+        weight_bytes_parts.append(arr.tobytes())
+
+    # 2. Write binary weight shard
+    shard_filename = "group1-shard1of1.bin"
+    with open(tfjs_out_dir / shard_filename, "wb") as fbin:
+        for chunk in weight_bytes_parts:
+            fbin.write(chunk)
+
+    # 3. Build model topology
+    #    Wrap get_config() exactly as tf.loadLayersModel expects:
+    #    modelTopology → { model_config: { class_name, config }, keras_version, backend }
+    keras_version = getattr(tf.keras, "__version__", "unknown")
+    model_topology = {
+        "model_config": {
+            "class_name": model.__class__.__name__,
+            "config": model.get_config(),
+        },
+        "keras_version": keras_version,
+        "backend": "tensorflow",
+    }
+
+    # 4. Write model.json
+    model_artifact = {
+        "format": "layers-model",
+        "generatedBy": f"TensorFlow {tf.__version__} / Keras {keras_version}",
+        "convertedBy": "Elevate custom TFJS exporter",
+        "modelTopology": model_topology,
+        "weightsManifest": [{"paths": [shard_filename], "weights": weight_specs}],
+    }
+    (tfjs_out_dir / "model.json").write_text(
+        json.dumps(model_artifact, indent=2), encoding="utf-8"
+    )
+
+    total_mb = sum(len(b) for b in weight_bytes_parts) / 1_048_576
+    print(
+        f"[emotion-cnn] TFJS export complete → {tfjs_out_dir}  "
+        f"({len(weight_specs)} weight tensors, {total_mb:.1f} MB)"
+    )
+
+
 
 def main() -> None:
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
@@ -246,27 +341,53 @@ def main() -> None:
     ds_val = _build_tf_dataset(split.val_files, split.val_labels, training=False)
     ds_test = _build_tf_dataset(split.test_files, split.test_labels, training=False)
 
-    model = _build_model(num_classes=len(CLASS_NAMES))
+    model, backbone = _build_model(num_classes=len(CLASS_NAMES))
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
         loss=tf.keras.losses.SparseCategoricalCrossentropy(),
         metrics=["accuracy"],
     )
-
+ 
     callbacks = [
-        tf.keras.callbacks.EarlyStopping(monitor="val_accuracy", patience=5, restore_best_weights=True),
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2, min_lr=1e-6),
     ]
-
-    print("[emotion-cnn] Training head")
+    if EARLY_STOP_PATIENCE > 0:
+        callbacks.insert(
+            0,
+            tf.keras.callbacks.EarlyStopping(
+                monitor="val_accuracy",
+                patience=EARLY_STOP_PATIENCE,
+                restore_best_weights=True,
+            ),
+        )
+ 
+    print("[emotion-cnn] Training head (backbone frozen)")
     hist_head = model.fit(
-        ds_train,
-        validation_data=ds_val,
-        epochs=EPOCHS_HEAD,
-        class_weight=class_weight,
-        callbacks=callbacks,
-        verbose=1,
+        ds_train, validation_data=ds_val, epochs=EPOCHS_HEAD,
+        class_weight=class_weight, callbacks=callbacks, verbose=1,
     )
+ 
+    print("[emotion-cnn] Fine-tuning backbone (unfreezing top layers)")
+    backbone.trainable = True
+    for layer in backbone.layers[:FINE_TUNE_AT]:
+        layer.trainable = False
+ 
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),  # small LR — don't wreck pretrained weights
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
+        metrics=["accuracy"],
+    )
+    hist_tune = model.fit(
+        ds_train, validation_data=ds_val, epochs=EPOCHS_FINETUNE,
+        class_weight=class_weight, callbacks=callbacks, verbose=1,
+    )
+    epochs_ran_tune = len(hist_tune.history.get("loss", []))
+    if epochs_ran_tune < EPOCHS_FINETUNE:
+        print(
+            "[emotion-cnn] Fine-tuning stopped early at "
+            f"{epochs_ran_tune}/{EPOCHS_FINETUNE} epochs "
+            f"(EarlyStopping patience={EARLY_STOP_PATIENCE})."
+        )
 
     # print("[emotion-cnn] Fine-tuning backbone")
     # base_model = None
@@ -331,25 +452,16 @@ def main() -> None:
     # AUTO-CONVERT & GITHUB PUSH AUTOMATION
     # ==========================================
     try:
-        print("[emotion-cnn] Installing tensorflowjs converter in cloud...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "tensorflowjs", "numpy<1.24"], check=True)
-
         print("[emotion-cnn] Converting model to TFJS format...")
-        tfjs_out_dir = ROOT / "frontend" / "js" / "emotion_tfjs"
+        tfjs_out_dir = FRONTEND_DIR / "js" / "emotion_tfjs"
         tfjs_out_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Clear out old web weights
+
+        # Clear out old web weights before writing new ones
         for item in tfjs_out_dir.iterdir():
             if item.is_file():
                 item.unlink()
 
-        # Convert
-        subprocess.run([
-            "tensorflowjs_converter",
-            "--input_format=keras",
-            str(model_path),
-            str(tfjs_out_dir)
-        ], check=True)
+        _write_tfjs_layers_model(model, tfjs_out_dir)
         print("[emotion-cnn] Conversion successful!")
 
         # Push to GitHub
@@ -357,7 +469,7 @@ def main() -> None:
         if github_token:
             print("[emotion-cnn] Pushing web model to GitHub...")
             # Use the Elevate repo name
-            repo_url = f"https://{github_token}@github.com/Sana-ai-coder/Elevate.git"
+            repo_url = f"https://{github_token}@github.com/Varun311004/Elevate.git"
             
             # Configure Git Bot
             subprocess.run(["git", "config", "--global", "user.email", "ai-bot@elevate.com"], check=False)
@@ -371,8 +483,18 @@ def main() -> None:
         else:
             print("⚠️ [emotion-cnn] Skipping GitHub push: GITHUB_TOKEN not found in environment.")
 
+    except FileNotFoundError as e:
+        print(
+            "[emotion-cnn] Automation Pipeline Failed: missing executable while running "
+            f"TFJS/Git step. filename={getattr(e, 'filename', None)} err={e}"
+        )
+    except subprocess.CalledProcessError as e:
+        print(
+            "[emotion-cnn] Automation Pipeline Failed: command exited non-zero. "
+            f"returncode={e.returncode} cmd={e.cmd}"
+        )
     except Exception as e:
-        print(f"❌ [emotion-cnn] Automation Pipeline Failed: {e}")
+        print(f"[emotion-cnn] Automation Pipeline Failed: {e}")
 
 
 if __name__ == "__main__":
