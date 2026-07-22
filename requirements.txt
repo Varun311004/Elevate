@@ -12,7 +12,7 @@ psycopg2-binary
 requests>=2.31.0
 pgvector>=0.2.5
 imagehash>=4.3.1
-torch==2.5.1
+# torch==2.5.1
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 pytest
