@@ -104,7 +104,9 @@ frontend/js/emotion_tfjs/*
 !backend/ai_models/emotion_model.keras
 !backend/ai_models/emotion_model_info.json
 !frontend/js/emotion_tfjs/model.json
-!frontend/js/emotion_tfjs/group1-shard1of1.bin
+!frontend/js/emotion_tfjs/group1-shard1of3.bin
+!frontend/js/emotion_tfjs/group1-shard2of3.bin
+!frontend/js/emotion_tfjs/group1-shard3of3.bin
 
 # Archived/experimental snapshots not needed in primary repo history
 backend/unnecessary/
