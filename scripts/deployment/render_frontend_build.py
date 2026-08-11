@@ -18,13 +18,16 @@ def normalize_api_base(value: str) -> str:
 def report_emotion_tfjs_assets(repo_root: Path) -> int:
     tfjs_dir = repo_root / "frontend" / "js" / "emotion_tfjs"
     model_json = tfjs_dir / "model.json"
-    weights_bin = tfjs_dir / "group1-shard1of3.bin" & tfjs_dir / "group1-shard1of3.bin" & tfjs_dir / "group1-shard1of3.bin"
+    
+    shard1 = tfjs_dir / "group1-shard1of3.bin"
+    shard2 = tfjs_dir / "group1-shard2of3.bin"
+    shard3 = tfjs_dir / "group1-shard3of3.bin"
 
     has_model = model_json.exists()
-    has_weights = weights_bin.exists()
-
+    has_weights = shard1.exists() and shard2.exists() and shard3.exists()
+    
     print(f"[render-frontend-build] emotion tfjs model.json={'present' if has_model else 'missing'} ({model_json})")
-    print(f"[render-frontend-build] emotion tfjs weights={'present' if has_weights else 'missing'} ({weights_bin})")
+    print(f"[render-frontend-build] emotion tfjs weights={'present' if has_weights else 'missing'} (verified all 3 shards in {tfjs_dir})")
 
     if not (has_model and has_weights):
         print("[render-frontend-build] ERROR: required TFJS artifacts are missing")
