@@ -18,7 +18,7 @@ def normalize_api_base(value: str) -> str:
 def report_emotion_tfjs_assets(repo_root: Path) -> int:
     tfjs_dir = repo_root / "frontend" / "js" / "emotion_tfjs"
     model_json = tfjs_dir / "model.json"
-    weights_bin = tfjs_dir / "group1-shard1of1.bin"
+    weights_bin = tfjs_dir / "group1-shard1of3.bin" & tfjs_dir / "group1-shard1of3.bin" & tfjs_dir / "group1-shard1of3.bin"
 
     has_model = model_json.exists()
     has_weights = weights_bin.exists()
