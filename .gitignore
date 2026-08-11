@@ -114,6 +114,7 @@ frontend/unnecessary/
 dataset/
 Massive_Emotion_Dataset/
 Bored_vs_Focused_Training_Data/
+.emotion_model_previous/
 
 # Nested repo metadata if present
 ai/.git/

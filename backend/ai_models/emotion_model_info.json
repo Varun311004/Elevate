@@ -1,11 +1,27 @@
 {
-  "timestamp": "20260722T180140Z",
-  "model_type": "efficientnetv2b0_transfer",
-  "architecture": "EfficientNetV2B0 + Dense(256) + Softmax(7)",
-  "img_size": [
-    96,
-    96
-  ],
+  "model_name": "elevate_emotion_mobilenetv2",
+  "model_type": "mobilenetv2_transfer_learning",
+  "timestamp": "2026-08-08T22:32:23.937107+00:00",
+  "tensorflow_version": "2.15.0",
+  "tensorflowjs_version": "4.22.0",
+  "input": {
+    "shape": [
+      96,
+      96,
+      3
+    ],
+    "dtype": "float32",
+    "range": [
+      0.0,
+      1.0
+    ],
+    "channels": "RGB"
+  },
+  "preprocessing": {
+    "external_range": "[0,1]",
+    "internal_operation": "x * 2.0 - 1.0",
+    "backbone_expected_range": "[-1,1]"
+  },
   "class_names": [
     "happy",
     "bored",
@@ -15,124 +31,201 @@
     "angry",
     "surprised"
   ],
-  "dataset_counts": {
-    "train": 18855,
-    "val": 3350,
-    "test": 4771,
-    "total": 26976
+  "class_folder_mapping": {
+    "happy": [
+      "happy"
+    ],
+    "bored": [
+      "bored"
+    ],
+    "focused": [
+      "focused"
+    ],
+    "confused": [
+      "confused"
+    ],
+    "neutral": [
+      "neutral"
+    ],
+    "angry": [
+      "angry"
+    ],
+    "surprised": [
+      "surprised",
+      "surprise"
+    ]
   },
-  "class_weight": {
-    "0": 0.516108723619741,
-    "1": 1.1777750015616215,
-    "2": 1.6206807632800413,
-    "3": 2.918278904194397,
-    "4": 0.7585388421772539,
-    "5": 0.9234046721191047,
-    "6": 1.173158287705326
+  "dataset_counts": {
+    "happy": 7213,
+    "bored": 358,
+    "focused": 347,
+    "confused": 1285,
+    "neutral": 4962,
+    "angry": 3985,
+    "surprised": 3167
+  },
+  "split_counts": {
+    "train": 14921,
+    "validation": 3198,
+    "test": 3198,
+    "total": 21317
+  },
+  "class_balance_weights": {
+    "happy": 0.7208681963641832,
+    "bored": 3.2331190024696346,
+    "focused": 3.2859081083889894,
+    "confused": 1.7083572889844005,
+    "neutral": 0.8691728644705268,
+    "angry": 0.9699163798899031,
+    "surprised": 1.087866753262419
+  },
+  "training": {
+    "seed": 42,
+    "batch_size": 32,
+    "head_epochs_requested": 12,
+    "fine_tune_epochs_requested": 10,
+    "head_learning_rate": 0.001,
+    "fine_tune_learning_rate": 1e-05,
+    "fine_tune_layers": 40
   },
   "training_history": {
-    "epochs_run": 18,
-    "best_val_accuracy": 0.6785074472427368
-  },
-  "validation_metrics": {
-    "accuracy": 0.6591,
-    "macro_f1": 0.7045,
-    "macro_precision": 0.6952,
-    "macro_recall": 0.7258,
-    "per_class": {
-      "happy": {
-        "precision": 0.7089,
-        "recall": 0.5209,
-        "f1": 0.6005,
-        "support": 935
-      },
-      "bored": {
-        "precision": 0.9549,
-        "recall": 0.9922,
-        "f1": 0.9732,
-        "support": 512
-      },
-      "focused": {
-        "precision": 0.9793,
-        "recall": 0.9,
-        "f1": 0.938,
-        "support": 210
-      },
-      "confused": {
-        "precision": 0.6911,
-        "recall": 0.9444,
-        "f1": 0.7981,
-        "support": 180
-      },
-      "neutral": {
-        "precision": 0.5111,
-        "recall": 0.5734,
-        "f1": 0.5405,
-        "support": 640
-      },
-      "angry": {
-        "precision": 0.4049,
-        "recall": 0.4411,
-        "f1": 0.4222,
-        "support": 492
-      },
-      "surprised": {
-        "precision": 0.6164,
-        "recall": 0.7087,
-        "f1": 0.6593,
-        "support": 381
-      }
-    }
+    "head_epochs_run": 9,
+    "fine_tune_epochs_run": 10,
+    "best_head_val_loss": 0.8240982294082642,
+    "best_fine_tune_val_loss": 0.6762381792068481
   },
   "test_metrics": {
-    "accuracy": 0.7212,
-    "macro_f1": 0.7191,
-    "macro_precision": 0.7063,
-    "macro_recall": 0.7432,
-    "per_class": {
+    "accuracy": 0.7301438398999375,
+    "macro_precision": 0.8145958409913249,
+    "macro_recall": 0.826211156949444,
+    "macro_f1": 0.8198906509981304,
+    "classification_report": {
       "happy": {
-        "precision": 0.7039,
-        "recall": 0.5221,
-        "f1": 0.5996,
-        "support": 1061
+        "precision": 0.797270955165692,
+        "recall": 0.756007393715342,
+        "f1-score": 0.7760910815939279,
+        "support": 1082.0
       },
       "bored": {
-        "precision": 0.9399,
-        "recall": 0.9976,
-        "f1": 0.9679,
-        "support": 423
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 54.0
       },
       "focused": {
-        "precision": 0.9992,
-        "recall": 0.9792,
-        "f1": 0.9891,
-        "support": 1251
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 52.0
       },
       "confused": {
-        "precision": 0.7068,
-        "recall": 0.967,
-        "f1": 0.8167,
-        "support": 182
+        "precision": 0.9004739336492891,
+        "recall": 0.9844559585492227,
+        "f1-score": 0.9405940594059405,
+        "support": 193.0
       },
       "neutral": {
-        "precision": 0.4829,
-        "recall": 0.5853,
-        "f1": 0.5292,
-        "support": 774
+        "precision": 0.6493150684931507,
+        "recall": 0.6370967741935484,
+        "f1-score": 0.6431478968792401,
+        "support": 744.0
       },
       "angry": {
-        "precision": 0.4381,
-        "recall": 0.459,
-        "f1": 0.4483,
-        "support": 586
+        "precision": 0.5913978494623656,
+        "recall": 0.6438127090301003,
+        "f1-score": 0.6164931945556446,
+        "support": 598.0
       },
       "surprised": {
-        "precision": 0.6732,
-        "recall": 0.6923,
-        "f1": 0.6826,
-        "support": 494
+        "precision": 0.7637130801687764,
+        "recall": 0.7621052631578947,
+        "f1-score": 0.7629083245521602,
+        "support": 475.0
+      },
+      "accuracy": 0.7301438398999375,
+      "macro avg": {
+        "precision": 0.8145958409913249,
+        "recall": 0.826211156949444,
+        "f1-score": 0.8198906509981304,
+        "support": 3198.0
+      },
+      "weighted avg": {
+        "precision": 0.7323166606320072,
+        "recall": 0.7301438398999375,
+        "f1-score": 0.730710326308531,
+        "support": 3198.0
       }
-    }
+    },
+    "confusion_matrix": [
+      [
+        818,
+        0,
+        0,
+        7,
+        99,
+        113,
+        45
+      ],
+      [
+        0,
+        54,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        52,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        190,
+        2,
+        1,
+        0
+      ],
+      [
+        105,
+        0,
+        0,
+        7,
+        474,
+        113,
+        45
+      ],
+      [
+        67,
+        0,
+        0,
+        6,
+        118,
+        385,
+        22
+      ],
+      [
+        36,
+        0,
+        0,
+        1,
+        37,
+        39,
+        362
+      ]
+    ]
   },
-  "val_accuracy": 0.6591
+  "val_accuracy": 0.7301438398999375,
+  "tfjs": {
+    "format": "layers_model",
+    "loader": "tf.loadLayersModel",
+    "path": "/js/emotion_tfjs/model.json"
+  }
 }

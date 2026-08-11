@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import sys
 
 # ==========================================================
 # Project Paths
@@ -16,10 +17,11 @@ PROJECT_ROOT = SCRIPTS_DIR.parent
 # ==========================================================
 
 VENV_DIR = PROJECT_ROOT / ".venv"
-VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
+VENV_PYTHON = VENV_DIR / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 
 AI_VENV_DIR = PROJECT_ROOT / ".venv-ai"
-AI_VENV_PYTHON = AI_VENV_DIR / "Scripts" / "python.exe"
+AI_VENV_PYTHON = AI_VENV_DIR / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+
 
 # ==========================================================
 # Project Directories
@@ -37,7 +39,7 @@ MODELS_DIR = BACKEND_DIR / "models"
 
 STARTUP_HEALTHCHECK = PROJECT_ROOT / "scripts" / "startup_healthcheck.py"
 
-AI_START_SCRIPT = AI_DIR / "start.bat"
+AI_START_SCRIPT = AI_DIR / ("start.bat" if sys.platform == "win32" else "start.sh")
 
 # ==========================================================
 # Runtime
@@ -83,9 +85,9 @@ BACKEND_START_COMMAND = [
 
 FRONTEND_START_COMMAND = [
     str(VENV_PYTHON),
-    "-m",
-    "http.server",
-    "8000",
+    str(BOOTSTRAP_DIR / "frontend_slug_server.py"),
+    "--port", "8000",
+    "--directory", str(FRONTEND_DIR),
 ]
 
 AI_START_COMMAND = [

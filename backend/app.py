@@ -101,7 +101,7 @@ def _log_emotion_deploy_status(app: Flask) -> None:
             )
         app.logger.info(
             "[EmotionDeploy] Note: training is not automatic at backend startup. "
-            "Use scripts/train_strict_pipeline.py in HF/CI training pipelines."
+            "Use scripts/training/train_strict_pipeline.py in HF/CI training pipelines."
         )
     except Exception as exc:
         app.logger.warning("[EmotionDeploy] startup diagnostics failed: %s", exc)

@@ -17,7 +17,7 @@
   <div class="dashboard">
     <nav class="navbar navbar-expand-lg">
       <div class="container-fluid">
-        <a class="navbar-brand" href="teacher-dashboard.html">
+        <a class="navbar-brand" data-page="teacher-dashboard.html">
           <i class="fas fa-graduation-cap me-2"></i>Elevate
         </a>
         <div class="user-info" id="teacherUserInfo">
@@ -393,6 +393,12 @@
     <div class="emotion-feedback-text" id="feedbackText">Notification</div>
   </div>
 
+  <script type="module">
+    import { TenantRouter } from './js/tenant-router.js';
+    TenantRouter.enforceOnPageLoad('teacher-dashboard.html');
+    TenantRouter.patchNavLinks();
+    TenantRouter.wireButtons();
+  </script>
   <script type="module" src="js/teacher-dashboard.js"></script>
 </body>
 </html>

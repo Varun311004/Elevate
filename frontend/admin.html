@@ -71,7 +71,7 @@
         <i class="fas fa-sign-out-alt"></i>
       </button>
     </div>
-  </aside>
+    </aside>
 
   <!-- Mobile sidebar toggle -->
   <button class="sidebar-mobile-toggle" id="sidebarToggle" aria-label="Open sidebar">
@@ -642,6 +642,12 @@
       </div>
     </div>
   </div>
+  <script type="module">
+    import { TenantRouter } from './js/tenant-router.js';
+    TenantRouter.enforceOnPageLoad('admin.html');
+    TenantRouter.patchNavLinks();
+    TenantRouter.wireButtons();
+  </script>
   
   <div class="modal-overlay hidden" id="importUsersModal">
     <div class="modal-box">

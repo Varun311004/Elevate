@@ -22,7 +22,7 @@
       <!-- Navigation Bar -->
       <nav class="navbar navbar-expand-lg">
         <div class="container-fluid">
-          <a class="navbar-brand" href="dashboard.html">
+          <a class="navbar-brand" data-page="dashboard.html">
             <i class="fas fa-graduation-cap me-2"></i>Elevate
           </a>
           <div class="user-info">
@@ -48,25 +48,25 @@
       <!-- Main Content -->
       <div class="main-content">
         <!-- Sidebar -->
-        <div class="sidebar">
+          <div class="sidebar">
           <ul class="nav flex-column">
             <li class="nav-item">
-              <a class="nav-link" href="dashboard.html">
+              <a class="nav-link" data-page="dashboard.html">
                 <i class="fas fa-chart-line"></i> Progress
               </a>
             </li>
             <li class="nav-item">
-              <a class="nav-link active" href="learning.html">
+              <a class="nav-link active" data-page="learning.html">
                 <i class="fas fa-book-reader"></i> Learning
               </a>
             </li>
             <li class="nav-item">
-              <a class="nav-link" href="reports.html">
+              <a class="nav-link" data-page="reports.html">
                 <i class="fas fa-file-alt"></i> Reports
               </a>
             </li>
             <li class="nav-item">
-              <a class="nav-link" href="settings.html">
+              <a class="nav-link" data-page="settings.html">
                 <i class="fas fa-cog"></i> Settings
               </a>
             </li>
@@ -355,9 +355,17 @@
     <script src="https://unpkg.com/@tensorflow/tfjs-backend-cpu@2.4.0/dist/tf-backend-cpu.js"></script>
     <script src="https://unpkg.com/@tensorflow-models/face-landmarks-detection@0.0.1/dist/face-landmarks-detection.js"></script> -->
     
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@2.4.0/dist/tf.min.js"></script>
+    <!-- Keep these compatible versions pinned. The detector uses its TF.js
+         runtime, so MediaPipe's separate FaceMesh script is intentionally absent. -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@1.0.6/dist/face-landmarks-detection.min.js"></script>
 
-    <script src="https://unpkg.com/@tensorflow-models/face-landmarks-detection@0.0.1/dist/face-landmarks-detection.js"></script>
+    <script type="module">
+      import { TenantRouter } from './js/tenant-router.js';
+      TenantRouter.enforceOnPageLoad('learning.html');
+      TenantRouter.patchNavLinks();
+      TenantRouter.wireButtons();
+    </script>
 
     <!-- Main application - loads AFTER TensorFlow.js -->
     <script type="module" src="js/main.js"></script>

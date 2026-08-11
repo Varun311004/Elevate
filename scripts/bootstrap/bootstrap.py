@@ -35,7 +35,7 @@ def preflight() -> None:
         if not VENV_PYTHON.exists():
             problems.append(
                 f"Main virtual environment not found at {VENV_PYTHON}. "
-                "Create it with: py -3.12 -m venv .venv"
+                "Create it with: py -3.11 -m venv .venv"
             )
         if not AI_START_SCRIPT.exists():
             problems.append(f"AI start script not found at {AI_START_SCRIPT}.")

@@ -13,6 +13,7 @@ how things are printed — all console styling lives in scripts/bootstrap/logger
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -63,7 +64,7 @@ EMOTION_CLASS_FOLDERS = [
     "confused",
     "neutral",
     "angry",
-    "surprise",
+    "surprised",
 ]
 
 # ---------------------------------------------------------------------------
@@ -180,12 +181,6 @@ def _assert_gemini_key_if_required() -> None:
     )
 
 
-def _bootstrap_pip() -> None:
-    subprocess.run([str(PYTHON_EXE), "-m", "ensurepip", "--upgrade"], cwd=ROOT)
-    probe = subprocess.run([str(PYTHON_EXE), "-m", "pip", "--version"], cwd=ROOT)
-    if probe.returncode != 0:
-        raise RuntimeError("pip bootstrap failed in virtual environment")
-
 
 def _read_counts() -> tuple[int, int]:
     global _APP_CACHE
@@ -210,75 +205,6 @@ def _ensure_users(user_count: int) -> None:
         return
 
     _run([str(PYTHON_EXE), SEED_USERS_SCRIPT], "Seeding default users")
-
-
-def _ensure_dependencies() -> None:
-    """Install required packages if backend imports fail due missing modules."""
-    try:
-        global _APP_CACHE
-        _APP_CACHE = None
-        _read_counts()
-        return
-    except Exception as exc:
-        message = str(exc)
-        recoverable = (
-            isinstance(exc, ModuleNotFoundError)
-            or isinstance(exc, ImportError)
-            or "No module named" in message
-            or "cannot import name 'Flask' from 'flask'" in message
-        )
-
-        if not recoverable:
-            raise
-
-        warning(f"Dependency issue detected: {message}")
-        _bootstrap_pip()
-
-        _run(
-            [
-                str(PYTHON_EXE),
-                "-m",
-                "pip",
-                "install",
-                "--upgrade",
-                "pip",
-                "setuptools",
-                "wheel",
-            ],
-            "Upgrading pip tooling for dependency recovery",
-        )
-
-        runtime_packages = [
-            "flask",
-            "flask_sqlalchemy",
-            "flask_cors",
-            "python-dotenv",
-            "PyJWT",
-            "werkzeug",
-            "bleach",
-            "alembic",
-            "psycopg2-binary",
-            "numpy",
-            "scikit-learn",
-            "scipy",
-            "shap",
-            "joblib",
-        ]
-        _run(
-            [
-                str(PYTHON_EXE),
-                "-m",
-                "pip",
-                "install",
-                "--upgrade",
-                "--force-reinstall",
-                *runtime_packages,
-            ],
-            "Installing runtime backend dependencies",
-        )
-
-        # Verify that imports now resolve correctly.
-        _read_counts()
 
 
 def _ensure_questions(question_count: int) -> None:
@@ -474,19 +400,46 @@ def _ensure_dkt_model() -> None:
 
 
 def _ensure_emotion_model() -> None:
-    """Build TFJS emotion model artifact when missing."""
-    tfjs_model = ROOT / "frontend" / "js" / "emotion_tfjs" / "model.json"
+    """Ensure the complete Keras + TF.js emotion artifact set exists."""
+    keras_model = ROOT / "backend" / "ai_models" / "emotion_model.h5"
+    tfjs_dir = ROOT / "frontend" / "js" / "emotion_tfjs"
+    tfjs_model = tfjs_dir / "model.json"
     metrics_info = ROOT / "backend" / "ai_models" / "emotion_model_info.json"
-    if tfjs_model.exists() and metrics_info.exists():
-        success(f"Emotion TFJS model exists: {tfjs_model}. Skipping retraining.")
-        return
+
+    required_artifacts = [keras_model, metrics_info, tfjs_model]
+    if all(path.is_file() for path in required_artifacts):
+        try:
+            manifest = json.loads(tfjs_model.read_text(encoding="utf-8")).get("weightsManifest", [])
+            shard_paths = [
+                path
+                for group in manifest
+                if isinstance(group, dict)
+                for path in group.get("paths", [])
+            ]
+            shards_ok = bool(shard_paths) and all((tfjs_dir / path).is_file() for path in shard_paths)
+        except Exception:
+            shards_ok = False
+
+        if shards_ok:
+            success(f"Emotion model artifacts exist: {tfjs_model}. Skipping retraining.")
+            return
+
+    info("Emotion model artifacts are incomplete. Retraining and rebuilding TF.js artifacts.")
+
+    # The local trainer intentionally uses Windows + WSL for TF.js conversion.
+    # Render has no WSL runtime; production should deploy the committed artifacts
+    # or use the existing remote HF strict-training path instead.
+    if _is_truthy_env("RENDER", "0") or os.environ.get("RENDER_SERVICE_ID"):
+        raise RuntimeError(
+            "Emotion model artifacts are missing on Render. "
+            "Deploy the generated backend/ai_models and frontend/js/emotion_tfjs artifacts "
+            "or run the remote HF strict-training workflow; local WSL conversion is not available on Render."
+        )
 
     if not EMOTION_DATASET_DIR.exists():
-        warning(
-            f"Emotion dataset folder not found at {EMOTION_DATASET_DIR}. "
-            "Skipping emotion model training so backend startup can continue."
+        raise RuntimeError(
+            f"Emotion dataset folder not found at {EMOTION_DATASET_DIR}."
         )
-        return
 
     missing_folders = [
         folder
@@ -494,11 +447,10 @@ def _ensure_emotion_model() -> None:
         if not (EMOTION_DATASET_DIR / folder).exists()
     ]
     if missing_folders:
-        warning(
+        raise RuntimeError(
             "Emotion dataset is incomplete. Missing class folders: "
-            f"{', '.join(missing_folders)}. Skipping emotion model training."
+            + ", ".join(missing_folders)
         )
-        return
 
     _run(
         [str(PYTHON_EXE), TRAIN_EMOTION_SCRIPT],
@@ -542,7 +494,6 @@ def main() -> int:
         _assert_gemini_key_if_required()
 
         with stage("Dependencies & Data"):
-            _ensure_dependencies()
             users_before, questions_before = _read_counts()
             info(f"Current data status -> users: {users_before}, questions: {questions_before}")
 

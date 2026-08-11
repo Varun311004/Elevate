@@ -8,6 +8,7 @@ import { emotionDetector } from './emotion-detector-tfjs.js';
 import { adaptiveLearning } from './adaptive-learning.js';
 import { progressTracker } from './progress-tracker.js';
 import { storage } from './storage.js';
+import { TenantRouter } from './tenant-router.js';
 
 console.log('Elevate: main.js loaded successfully');
 
@@ -100,9 +101,8 @@ function getRoleHomePage(role, schoolSlug = null) {
       ? 'admin.html'
       : 'dashboard.html';
 
-  // FIX: Use query parameters instead of path segments so Render doesn't throw a 404
   if (schoolSlug && normalizedRole !== 'admin') {
-      return `/${page}?school=${schoolSlug}`;
+    return `/${schoolSlug}/${page}`;
   }
 
   return `/${page}`;
@@ -111,6 +111,18 @@ function getRoleHomePage(role, schoolSlug = null) {
 function getScopedPagePath(pageFile) {
   const normalizedFile = String(pageFile || '').replace(/^\/+/, '');
   return `/${normalizedFile}`;
+}
+
+// Like getScopedPagePath, but for the URL shown in the address bar rather
+// than the path used to fetch shell content. The server-side routing
+// already resolves plain paths fine for fetch(), but the visible URL should
+// keep showing the school slug the user is actually on (e.g.
+// /nhitmenv/dashboard.html), matching what TenantRouter shows right after
+// login instead of silently flattening it back to /dashboard.html.
+function getVisibleShellPagePath(pageFile) {
+  const normalizedFile = String(pageFile || '').replace(/^\/+/, '');
+  const slug = getStoredSchoolSlugHint();
+  return slug ? `/${slug}/${normalizedFile}` : `/${normalizedFile}`;
 }
 
 async function withTimeout(promise, timeoutMs, timeoutLabel = 'Operation timed out') {
@@ -157,8 +169,8 @@ function routeFromStandalonePage(page) {
 function redirectStandaloneStudentPageToShell(page) {
   const route = routeFromStandalonePage(page);
   if (!route) return false;
-  // Preserve the ?school=slug parameter when redirecting
-  window.location.replace(`${getScopedPagePath('dashboard.html')}${window.location.search}#${route}`);
+  // Preserve the school slug (and any ?school=slug parameter) when redirecting
+  window.location.replace(`${getVisibleShellPagePath('dashboard.html')}${window.location.search}#${route}`);
   return true;
 }
 
@@ -204,9 +216,12 @@ async function loadStudentShellRoute(route, options = {}) {
   currentShellRoute = route;
   setActiveSidebarRoute(route);
 
-  // FIX: Preserve the ?school=slug parameter during SPA navigation
+  // Preserve the school slug (path-based, e.g. /nhitmenv/dashboard.html) in
+  // the visible URL on every shell route change, along with any ?school=
+  // parameter. getScopedPagePath() below (used for fetch) intentionally
+  // stays flat since the server already resolves that fine either way.
   const currentSearch = window.location.search;
-  const shellUrl = `${getScopedPagePath('dashboard.html')}${currentSearch}#${route}`;
+  const shellUrl = `${getVisibleShellPagePath('dashboard.html')}${currentSearch}#${route}`;
   
   if (replaceState) {
     history.replaceState({ shellRoute: route }, '', shellUrl);
@@ -244,7 +259,11 @@ async function setupStudentShellRouter() {
   const sidebarLinks = document.querySelectorAll('.sidebar .nav-link[href$=".html"]');
   sidebarLinks.forEach(link => {
     const href = link.getAttribute('href');
-    const route = href.replace('.html', '');
+    // Use just the filename, not the full href, so this matches regardless
+    // of whether the href is slug-prefixed (e.g. "/nhitmenv/learning.html")
+    // or plain (e.g. "/learning.html").
+    const fileName = href.split('/').pop() || '';
+    const route = fileName.replace('.html', '');
     if (!STUDENT_SHELL_ROUTE_TO_FILE[route]) return;
     link.setAttribute('data-shell-route', route);
     link.setAttribute('href', `#${route}`);
@@ -638,12 +657,13 @@ function initAuthPage() {
 
         showAuthAlert('loginAlert', utils.getMessage('auth.login_success'), 'success');
 
+        const pageName = role === 'teacher' ? 'teacher-dashboard.html' : role === 'admin' ? 'admin.html' : 'dashboard.html';
         if (selectedRole && selectedRole !== role) {
           const roleLabel = role.charAt(0).toUpperCase() + role.slice(1);
           showAuthAlert('loginAlert', `Signed in successfully. Your account is registered as ${roleLabel}. Redirecting...`, 'info');
-          setTimeout(() => utils.navigateTo(dest, true), 3500);
+          setTimeout(() => TenantRouter.redirectAfterLogin(pageName, session?.user?.school_slug), 3500);
         } else {
-          setTimeout(() => utils.navigateTo(dest, true), 900);
+          setTimeout(() => TenantRouter.redirectAfterLogin(pageName, session?.user?.school_slug), 900);
         }
       } else {
         console.error('Login error:', result.error);
@@ -3933,17 +3953,26 @@ function setupCameraControls() {
         startBtn.disabled = true;
         startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
         
-        // Load models if not loaded
-        if(!state.modelsLoaded && !state.usingSimulatedEmotions) {
-          await emotionDetector.loadModels();
-        }
-        
         // Start camera
         const cameraStarted = await emotionDetector.startCamera();
         
         // Start detection
         if (cameraStarted) {
-          emotionDetector.startDetection();
+          if (!state.modelsLoaded && !state.usingSimulatedEmotions) {
+            emotionDetector.loadModels()
+              .then(() => {
+                if (state.cameraActive) {
+                  emotionDetector.startDetection();
+                  updateLearningStatusCard();
+                  updateLearningApplyButtonState();
+                }
+              })
+              .catch(error => {
+                console.error('Error loading emotion models after camera start:', error);
+              });
+          } else {
+            emotionDetector.startDetection();
+          }
 
           const cameraRequired = isCameraRequiredForLearning();
 
