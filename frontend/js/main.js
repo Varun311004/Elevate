@@ -175,9 +175,13 @@ function redirectStandaloneStudentPageToShell(page) {
 }
 
 function setActiveSidebarRoute(route) {
-  const links = document.querySelectorAll('.sidebar .nav-link[data-shell-route]');
+  const page = STUDENT_SHELL_ROUTE_TO_FILE[route];
+  const links = document.querySelectorAll('.sidebar .nav-link[data-page]');
   links.forEach(link => {
-    link.classList.toggle('active', link.getAttribute('data-shell-route') === route);
+    link.classList.toggle(
+      'active',
+      link.dataset.page === page
+    );
   });
 }
 
@@ -211,6 +215,7 @@ async function loadStudentShellRoute(route, options = {}) {
     const nextContentArea = parsed.querySelector('.content-area');
     if (!nextContentArea) return;
     contentArea.innerHTML = nextContentArea.innerHTML;
+    TenantRouter.patchNavLinks(contentArea);
   }
 
   currentShellRoute = route;
@@ -256,23 +261,30 @@ async function setupStudentShellRouter() {
 
   window.__elevateShellRouting = true;
 
-  const sidebarLinks = document.querySelectorAll('.sidebar .nav-link[href$=".html"]');
-  sidebarLinks.forEach(link => {
-    const href = link.getAttribute('href');
-    // Use just the filename, not the full href, so this matches regardless
-    // of whether the href is slug-prefixed (e.g. "/nhitmenv/learning.html")
-    // or plain (e.g. "/learning.html").
-    const fileName = href.split('/').pop() || '';
-    const route = fileName.replace('.html', '');
-    if (!STUDENT_SHELL_ROUTE_TO_FILE[route]) return;
-    link.setAttribute('data-shell-route', route);
-    link.setAttribute('href', `#${route}`);
-    link.addEventListener('click', async (e) => {
-      e.preventDefault();
-      if (currentShellRoute === route) return;
-      await loadStudentShellRoute(route, { pushState: true });
-    });
+  const shellLinks = document.querySelectorAll('a[data-page]');
+
+  if (!window.__elevateShellNavigationBound) {
+  window.__elevateShellNavigationBound = true;
+
+  document.addEventListener('click', async (e) => {
+    const link = e.target.closest('a[data-page]');
+    if (!link || !window.__elevateShellRouting) return;
+
+    const page = String(link.dataset.page || '').trim();
+
+    const route = Object.entries(STUDENT_SHELL_ROUTE_TO_FILE)
+      .find(([, file]) => file === page)?.[0];
+
+    if (!route) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (currentShellRoute === route) return;
+
+    await loadStudentShellRoute(route, { pushState: true });
   });
+}
 
   window.addEventListener('popstate', async (event) => {
     if (!window.__elevateShellRouting) return;
