@@ -190,9 +190,9 @@ async function loadStudentShellRoute(route, options = {}) {
   if (!STUDENT_SHELL_ROUTE_TO_FILE[route]) route = 'dashboard';
 
   if (currentShellRoute === 'learning' && route !== 'learning') {
-    // Keep camera stream alive while leaving learning, but stop active loops/timers.
+    // Leaving Learning: completely shut down camera + emotion detection.
     stopQuestionTimer();
-    emotionDetector.prepareForRouteChange();
+    emotionDetector.stopCamera();
   }
 
   if (route !== 'learning' && learningReadinessWatcher) {
@@ -911,6 +911,7 @@ function formatTopicLabel(slug) {
 
 let learningReadinessWatcher = null;
 let learningVisibilityHandlerAttached = false;
+let cameraLifecycleListenerAttached = false;
 let assignedLearningTests = [];
 let selectedAssignedLearning = null;
 let activeAssignedTestSession = null;
@@ -1032,6 +1033,45 @@ function isLearningControlReady() {
     return true;
   }
   return state.cameraActive && hasLiveCameraStream() && state.modelsLoaded && !state.usingSimulatedEmotions && state.faceDetectionConfirmed;
+}
+
+function refreshLearningCameraGate() {
+  const cameraRequired =
+    isCameraRequiredForLearning();
+
+  const ready =
+    isLearningControlReady();
+
+  const controlsEnabled =
+    !cameraRequired || ready;
+
+  setLearningControlsEnabled(
+    controlsEnabled
+  );
+
+  setQuestionInteractionLocked(
+    cameraRequired && !ready
+  );
+
+  if (
+    cameraRequired &&
+    !ready
+  ) {
+    stopQuestionTimer();
+
+    const questionContainer =
+      document.getElementById(
+        'questionContainer'
+      );
+
+    if (questionContainer) {
+      questionContainer.style.display =
+        'none';
+    }
+  }
+
+  updateLearningStatusCard();
+  updateLearningApplyButtonState();
 }
 
 function updateLearningStatusCard() {
@@ -1210,45 +1250,24 @@ function ensureLearningVisibilityRecoveryHandler() {
 
 function startLearningReadinessWatcher() {
   if (learningReadinessWatcher) {
-    clearInterval(learningReadinessWatcher);
+    clearInterval(
+      learningReadinessWatcher
+    );
+
     learningReadinessWatcher = null;
   }
 
-  let lastReadyState = null;
-  let lastCameraRequired = null;
-
   const applyLearningReadinessState = () => {
-    const cameraRequired = isCameraRequiredForLearning();
-    const ready = isLearningControlReady();
-    if (ready !== lastReadyState || cameraRequired !== lastCameraRequired) {
-      setLearningControlsEnabled(ready);
-      updateLearningStatusCard();
-      updateLearningApplyButtonState();
-      setQuestionInteractionLocked(!ready);
-      if (!ready && cameraRequired) {
-        stopQuestionTimer();
-        const questionContainer = document.getElementById('questionContainer');
-        if (questionContainer) {
-          questionContainer.style.display = 'none';
-        }
-      }
-      lastReadyState = ready;
-      lastCameraRequired = cameraRequired;
-      if (ready && cameraRequired) {
-        utils.showNotification('Face detection confirmed. Learning controls are now enabled.', 'success');
-      }
-      if (!cameraRequired) {
-        setQuestionInteractionLocked(false);
-      }
-    } else {
-      updateLearningStatusCard();
-      updateLearningApplyButtonState();
-    }
+    refreshLearningCameraGate();
   };
 
-  // Apply immediately so controls do not remain stale/disabled after route change.
   applyLearningReadinessState();
-  learningReadinessWatcher = setInterval(applyLearningReadinessState, 600);
+
+  learningReadinessWatcher =
+    setInterval(
+      applyLearningReadinessState,
+      600
+    );
 }
 
 async function initLearningPage() {
@@ -1258,21 +1277,36 @@ async function initLearningPage() {
   setupProfileMenu();
   setupLogout();
   installBackNavigationGuard();
-  await syncUserSettingsFromServer();
-  
-  // Initialize emotion detector FIRST
-  const emotionInitialized = await emotionDetector.init();
+
+  // Settings and emotion detector initialization are independent.
+  const [
+    ,
+    emotionInitialized
+  ] = await Promise.all([
+    syncUserSettingsFromServer(),
+    emotionDetector.init()
+  ]);
+
   if (!emotionInitialized) {
-    console.error('Emotion detector failed to initialize');
-    utils.showNotification('Emotion detection unavailable', 'warning');
+    console.error(
+      'Emotion detector failed to initialize'
+    );
+
+    utils.showNotification(
+      'Emotion detection unavailable',
+      'warning'
+    );
   }
-  
-  // Setup camera controls
+
+  // Camera controls
   setupCameraControls();
   ensureLearningVisibilityRecoveryHandler();
-  
-  // Auto-load user's grade level from profile
-  await autoLoadUserGrade();
+
+  // Grade profile and assigned tests are independent.
+  await Promise.all([
+    autoLoadUserGrade(),
+    loadAssignedLearningTests()
+  ]);
   
   // Setup grade selector with hierarchical access
   setupGradeSelector();
@@ -1284,7 +1318,6 @@ async function initLearningPage() {
   setupQuestionHandlers();
   // Setup topic selector (syllabus)
   setupTopicSelector();
-  await loadAssignedLearningTests();
   applyLearningSettingsDefaults();
   setLearningMode('practice', { preserveAssignedSelection: true });
 
@@ -1307,28 +1340,36 @@ async function initLearningPage() {
   startLearningReadinessWatcher();
   updateLearningApplyButtonState();
   
-  // Initialize subject performance widget AFTER all DOM setup
-  console.log('🔄 Initializing performance widget...');
-  setTimeout(() => {
-    updateSubjectPerformanceWidget();
-    
-    // Setup refresh button for performance widget
-    const refreshBtn = document.getElementById('refreshPerformanceWidget');
-    if (refreshBtn) {
-      refreshBtn.addEventListener('click', () => {
-        const icon = refreshBtn.querySelector('i');
-        if (icon) icon.classList.add('fa-spin');
-        updateSubjectPerformanceWidget();
-        setTimeout(() => {
-          if (icon) icon.classList.remove('fa-spin');
-        }, 500);
-        utils.showNotification('Performance data refreshed', 'info');
-      });
-      console.log('✅ Refresh button initialized');
-    } else {
-      console.warn('❌ Refresh button not found');
-    }
-  }, 100);
+  // Performance is low-priority UI.
+  // Render it without blocking the main learning flow.
+  schedulePerformanceWidgetRefresh();
+
+  const refreshBtn =
+    document.getElementById(
+      'refreshPerformanceWidget'
+    );
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener(
+      'click',
+      () => {
+        const icon =
+          refreshBtn.querySelector('i');
+
+        if (icon) {
+          icon.classList.add('fa-spin');
+        }
+
+        schedulePerformanceWidgetRefresh();
+
+        window.setTimeout(() => {
+          if (icon) {
+            icon.classList.remove('fa-spin');
+          }
+        }, 350);
+      }
+    );
+  }
 }
 
 function applyLearningSettingsDefaults() {
@@ -1527,18 +1568,7 @@ function setupTopicSelector() {
 
 // Helper function to ensure grade and subject controls are disabled
 function ensureControlsDisabled() {
-  if (!isCameraRequiredForLearning()) {
-    setLearningControlsEnabled(true);
-    setQuestionInteractionLocked(false);
-    updateLearningApplyButtonState();
-    console.log('🔓 Camera not required. Learning controls remain enabled.');
-    return;
-  }
-
-  setLearningControlsEnabled(false);
-  updateLearningApplyButtonState();
-  document.querySelectorAll('.subject-btn').forEach(btn => btn.classList.remove('active'));
-  console.log('🔒 Grade, subject, and topic controls locked until real detection is confirmed.');
+  refreshLearningCameraGate();
 }
 
 function setupQuestionHandlers() {
@@ -2286,6 +2316,26 @@ function ensureTimerIsActiveForCurrentQuestion() {
   }
 }
 
+function schedulePerformanceWidgetRefresh() {
+  const refresh = () => {
+    updateSubjectPerformanceWidget();
+  };
+
+  if (
+    typeof window.requestIdleCallback === 'function'
+  ) {
+    window.requestIdleCallback(
+      refresh,
+      { timeout: 500 }
+    );
+  } else {
+    window.setTimeout(
+      refresh,
+      0
+    );
+  }
+}
+
 function updateSubjectPerformanceWidget() {
   console.log('📊 updateSubjectPerformanceWidget called');
   
@@ -2317,15 +2367,13 @@ function updateSubjectPerformanceWidget() {
     return;
   }
   
-  // Add fade-in animation class
-  performanceGrid.style.opacity = '0';
   
   performanceGrid.innerHTML = allPerformance.map(perf => {
     const accuracyColor = perf.accuracy >= 80 ? '#28a745' : perf.accuracy >= 60 ? '#ffc107' : '#dc3545';
     const streakIcon = perf.currentStreak >= 3 ? '🔥' : '';
     const isSelected = state.selectedSubject === perf.subject.toLowerCase();
     return `
-      <div class="subject-performance-item ${isSelected ? 'selected-subject' : ''}" style="animation: fadeInSlide 0.3s ease-out;">
+      <div class="subject-performance-item ${isSelected ? 'selected-subject' : ''}">
         <div class="subject-performance-subject">
           ${perf.subject.toUpperCase()} ${streakIcon}
           ${isSelected ? '<span style="color: var(--primary-color); margin-left: 8px;">●</span>' : ''}
@@ -2344,11 +2392,6 @@ function updateSubjectPerformanceWidget() {
     `;
   }).join('');
   
-  // Trigger fade-in animation
-  setTimeout(() => {
-    performanceGrid.style.opacity = '1';
-    performanceGrid.style.transition = 'opacity 0.3s ease-in';
-  }, 10);
 }
 
 // ===== REPORTS =====
@@ -3556,22 +3599,45 @@ function setupSettingsHandlers() {
   });
   
   // Require camera - real-time
-  const requireCamera = document.getElementById('requireCamera');
-  requireCamera.addEventListener('change', async (e) => {
-    await saveSettingRealTime('requireCamera', e.target.checked);
-    updateEmotionSettingsDependency(e.target.checked, getEffectiveSettings().enableEmotionFeedback);
-    
-    // Apply the change immediately - show message based on current page
-    if (e.target.checked) {
-      utils.showNotification('Practice mode now requires camera. Assigned tests always require camera and emotion tracking.', 'info');
-    } else {
-      utils.showNotification('Practice mode can run without camera. Assigned tests still require camera and emotion tracking.', 'info');
-      if (currentShellRoute === 'learning' || window.location.pathname.includes('learning.html')) {
-        updateLearningStatusCard();
-        updateLearningApplyButtonState();
+  const requireCamera =
+  document.getElementById('requireCamera');
+
+  if (requireCamera) {
+    requireCamera.addEventListener(
+      'change',
+      async (e) => {
+        const enabled =
+          Boolean(e.target.checked);
+
+        await saveSettingRealTime(
+          'requireCamera',
+          enabled
+        );
+
+        updateEmotionSettingsDependency(
+          enabled,
+          getEffectiveSettings()
+            .enableEmotionFeedback
+        );
+
+        if (
+          currentShellRoute === 'learning' ||
+          window.location.pathname.includes(
+            'learning.html'
+          )
+        ) {
+          refreshLearningCameraGate();
+        }
+
+        utils.showNotification(
+          enabled
+            ? 'Practice mode now requires camera and real face detection.'
+            : 'Practice mode can continue without camera. Assigned tests still require camera and emotion tracking.',
+          'info'
+        );
       }
-    }
-  });
+    );
+}
   
   // Enable emotion feedback - real-time
   const enableEmotionFeedback = document.getElementById('enableEmotionFeedback');
@@ -3954,114 +4020,146 @@ function setupLogout() {
   }
 }
 
+function renderCameraControls(status) {
+  const startBtn =
+    document.getElementById('startCamera');
+
+  const stopBtn =
+    document.getElementById('stopCamera');
+
+  if (!startBtn || !stopBtn) {
+    return;
+  }
+
+  switch (status) {
+    case 'starting':
+    case 'searching':
+      startBtn.style.display = 'none';
+      startBtn.disabled = true;
+
+      stopBtn.style.display = 'inline-flex';
+      stopBtn.disabled = true;
+      stopBtn.innerHTML =
+        '<i class="fas fa-video-slash"></i> Stop Camera';
+      break;
+
+    case 'active':
+      startBtn.style.display = 'none';
+      startBtn.disabled = true;
+
+      stopBtn.style.display = 'inline-flex';
+      stopBtn.disabled = false;
+      stopBtn.innerHTML =
+        '<i class="fas fa-video-slash"></i> Stop Camera';
+      break;
+
+    case 'stopping':
+      startBtn.style.display = 'none';
+      startBtn.disabled = true;
+
+      stopBtn.style.display = 'inline-flex';
+      stopBtn.disabled = true;
+      stopBtn.innerHTML =
+        '<i class="fas fa-spinner fa-spin"></i> Stopping...';
+      break;
+
+    case 'error':
+    case 'off':
+    default:
+      startBtn.style.display = 'inline-flex';
+      startBtn.disabled = false;
+      startBtn.innerHTML =
+        '<i class="fas fa-video"></i> Start Camera';
+
+      stopBtn.style.display = 'none';
+      stopBtn.disabled = true;
+      stopBtn.innerHTML =
+        '<i class="fas fa-video-slash"></i> Stop Camera';
+      break;
+  }
+}
+
 function setupCameraControls() {
   const startBtn = document.getElementById('startCamera');
   const stopBtn = document.getElementById('stopCamera');
 
-  if(startBtn) {
-    startBtn.addEventListener('click', async () => {
-      try {
-        // Disable button during initialization
-        startBtn.disabled = true;
-        startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
-        
-        // Start camera
-        const cameraStarted = await emotionDetector.startCamera();
-        
-        // Start detection
-        if (cameraStarted) {
-          if (!state.modelsLoaded && !state.usingSimulatedEmotions) {
-            emotionDetector.loadModels()
-              .then(() => {
-                if (state.cameraActive) {
-                  emotionDetector.startDetection();
-                  updateLearningStatusCard();
-                  updateLearningApplyButtonState();
-                }
-              })
-              .catch(error => {
-                console.error('Error loading emotion models after camera start:', error);
-              });
-          } else {
-            emotionDetector.startDetection();
-          }
-
-          const cameraRequired = isCameraRequiredForLearning();
-
-          if (state.usingSimulatedEmotions) {
-            utils.showNotification('Camera started in simulation mode. Controls stay locked until real face detection is active.', 'warning');
-          } else {
-            utils.showNotification(
-              cameraRequired
-                ? 'Camera started. Look at the screen until face detection points appear to unlock controls.'
-                : 'Camera started. Learning controls remain available because camera is optional.',
-              'info'
-            );
-          }
-
-          if (cameraRequired) {
-            setLearningControlsEnabled(false);
-            setQuestionInteractionLocked(true);
-          } else {
-            setLearningControlsEnabled(true);
-            setQuestionInteractionLocked(false);
-          }
-          updateLearningStatusCard();
-          updateLearningApplyButtonState();
-        } else {
-          utils.showNotification('Camera failed to start. Please try again.', 'error');
-          startBtn.disabled = false;
-          startBtn.innerHTML = '<i class="fas fa-video"></i> Start Camera';
-        }
-      } catch (error) {
-        console.error('Error starting camera:', error);
-        utils.showNotification('Camera error: ' + error.message, 'error');
-        startBtn.disabled = false;
-        startBtn.innerHTML = '<i class="fas fa-video"></i> Start Camera';
-      }
-    });
+  if (!startBtn || !stopBtn) {
+    return;
   }
 
-  if(stopBtn) {
-    stopBtn.addEventListener('click', () => {
-      const cameraRequired = isCameraRequiredForLearning();
+  renderCameraControls('off');
 
-      emotionDetector.stopCamera();
+  if (!cameraLifecycleListenerAttached) {
+    window.addEventListener('elevate:emotion-state', (event) => {
+      const status = event.detail?.status;
 
-      if (cameraRequired) {
-        stopQuestionTimer();
-        setLearningControlsEnabled(false);
-        setQuestionInteractionLocked(true);
-
-        // Strict mode: hide questions when camera is required and stopped.
-        const questionContainer = document.getElementById('questionContainer');
-        if (questionContainer) {
-          questionContainer.style.display = 'none';
-        }
-      } else {
-        // Optional mode: camera toggle must not impact question/control availability.
-        setLearningControlsEnabled(true);
-        setQuestionInteractionLocked(false);
+      if (!status) {
+        return;
       }
 
-      updateLearningStatusCard();
-      updateLearningApplyButtonState();
-      
-      // Re-enable start button
-      const startBtn = document.getElementById('startCamera');
-      if (startBtn) {
-        startBtn.disabled = false;
-        startBtn.innerHTML = '<i class="fas fa-video"></i> Start Camera';
+      renderCameraControls(status);
+
+      if (
+        status === 'active' ||
+        status === 'searching' ||
+        status === 'off' ||
+        status === 'error'
+      ) {
+        refreshLearningCameraGate();
       }
-      
-      utils.showNotification(
-        cameraRequired
-          ? 'Camera stopped. Start camera to continue learning.'
-          : 'Camera stopped. Learning remains available because camera is optional.',
-        'info'
+    });
+
+    cameraLifecycleListenerAttached = true;
+  }
+
+  startBtn.addEventListener('click', async () => {
+    try {
+      renderCameraControls('starting');
+
+      const cameraStarted =
+        await emotionDetector.startCamera();
+
+      if (!cameraStarted) {
+        renderCameraControls('off');
+        refreshLearningCameraGate();
+
+        utils.showNotification(
+          'Unable to start the camera. Please check camera permission and try again.',
+          'error'
+        );
+
+        return;
+      }
+
+      // Models are already guaranteed to be loaded by startCamera().
+      emotionDetector.startDetection();
+
+      renderCameraControls('searching');
+      refreshLearningCameraGate();
+
+    } catch (error) {
+      console.error(
+        'Error starting camera:',
+        error
       );
-    });
-  }
+
+      renderCameraControls('error');
+      refreshLearningCameraGate();
+
+      utils.showNotification(
+        'Camera error: ' + error.message,
+        'error'
+      );
+    }
+  });
+
+  stopBtn.addEventListener('click', () => {
+    renderCameraControls('stopping');
+
+    emotionDetector.stopCamera();
+
+    refreshLearningCameraGate();
+  });
 }
 
 // ===== NAVIGATION GUARD (Back button logout on protected pages) =====

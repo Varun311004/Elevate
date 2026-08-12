@@ -41,8 +41,11 @@ const MODEL_URL =
   '/js/emotion_tfjs/model.json';
 
 const MODEL_LOAD_TIMEOUT_MS = 30000;
-const FACE_INTERVAL_MS = 100;
-const INFERENCE_INTERVAL_MS = 180;
+
+// Facemesh no longer runs on a fixed interval — see _startFacemeshLoop().
+// It now runs continuously, tied to actual camera frame delivery,
+// so landmark updates are only bounded by hardware, not an arbitrary clock.
+const INFERENCE_INTERVAL_MS = 300;
 
 const SMOOTHING_ALPHA = 0.65;
 
@@ -68,7 +71,12 @@ export const emotionDetector = {
 
   animationFrameId: null,
 
-  _facemeshTimer: null,
+  // Increments whenever a new camera lifecycle starts/stops.
+  // Prevents stale async operations from modifying a newer session.
+  _cameraGeneration: 0,
+
+  _facemeshLoopHandle: null,
+  _facemeshUsesVideoFrameCallback: false,
   _inferenceTimer: null,
 
   _lastFacePrediction: null,
@@ -304,14 +312,16 @@ export const emotionDetector = {
   // ============================================================
 
   async startCamera() {
+    const generation = ++this._cameraGeneration;
+
+    this._emitLifecycleState('starting');
 
     try {
-
       if (!this.videoElement) {
 
         const ok = await this.init();
 
-        if (!ok) {
+        if (!ok || generation !== this._cameraGeneration) {
           return false;
         }
       }
@@ -321,31 +331,32 @@ export const emotionDetector = {
         state.cameraActive &&
         state.cameraStream
       ) {
-
-        const live =
-          state.cameraStream
-            .getVideoTracks()
-            .some(track =>
-              track.readyState === 'live'
-            );
+        const live = state.cameraStream
+          .getVideoTracks()
+          .some(track => track.readyState === 'live');
 
         if (live) {
+          if (generation !== this._cameraGeneration) {
+            return false;
+          }
 
-          this.videoElement.srcObject =
-            state.cameraStream;
+          this.videoElement.srcObject = state.cameraStream;
 
           await this.videoElement.play();
 
+          if (generation !== this._cameraGeneration) {
+            return false;
+          }
+
           this._syncCanvas();
-          this._updateCameraUI('active');
+          this._updateCameraUI('searching');
+          this._emitLifecycleState('searching');
 
           return true;
         }
       }
 
-      this._stopTracks(
-        this.videoElement.srcObject
-      );
+      this._stopTracks(this.videoElement.srcObject);
 
       const stream =
         await navigator.mediaDevices.getUserMedia({
@@ -370,6 +381,12 @@ export const emotionDetector = {
 
           audio: false
         });
+
+      // Stop was pressed while getUserMedia() was pending.
+      if (generation !== this._cameraGeneration) {
+        this._stopTracks(stream);
+        return false;
+      }
 
       this.videoElement.srcObject = stream;
       this.videoElement.muted = true;
@@ -402,12 +419,7 @@ export const emotionDetector = {
         );
 
         setTimeout(() => {
-
-          if (
-            !finished &&
-            this.videoElement.videoWidth > 0
-          ) {
-
+          if (!finished && this.videoElement.videoWidth > 0) {
             finish();
 
           } else if (!finished) {
@@ -422,10 +434,19 @@ export const emotionDetector = {
         }, 4000);
       });
 
+      if (generation !== this._cameraGeneration) {
+        this._stopTracks(stream);
+        return false;
+      }
+
       await this.videoElement.play();
 
-      updateState({
+      if (generation !== this._cameraGeneration) {
+        this._stopTracks(stream);
+        return false;
+      }
 
+      updateState({
         cameraStream: stream,
 
         cameraActive: true,
@@ -440,14 +461,27 @@ export const emotionDetector = {
 
       this._syncCanvas();
 
-      this._updateCameraUI('active');
+      this._updateCameraUI('starting');
 
-      // Wait until models are actually ready.
+      // Models may already be loaded. loadModels() is idempotent.
       await this.loadModels();
+          
+      // Stop may have happened while models were loading.
+      if (generation !== this._cameraGeneration) {
+        this._stopTracks(stream);
+        return false;
+      }
+      
+      this._updateCameraUI('searching');
+      this._emitLifecycleState('searching');
 
       return true;
 
     } catch (error) {
+      // A stale camera request must never overwrite the current UI/state.
+      if (generation !== this._cameraGeneration) {
+        return false;
+      }
 
       console.error(
         '[EmotionDetector] startCamera failed:',
@@ -457,14 +491,16 @@ export const emotionDetector = {
       updateState({
 
         cameraActive: false,
-
+        cameraStream: null,
         cameraPermissionDenied: true,
-
+        faceDetectionConfirmed: false,
         usingSimulatedEmotions: false
 
       });
 
+      this._clearOverlay();
       this._updateCameraUI('error');
+      this._emitLifecycleState('error');
 
       return false;
     }
@@ -541,11 +577,7 @@ export const emotionDetector = {
       'Looking for your face…'
     );
 
-    this._facemeshTimer =
-      setInterval(
-        () => this._runFaceDetection(),
-        FACE_INTERVAL_MS
-      );
+    this._startFacemeshLoop();
 
     this._inferenceTimer =
       setInterval(
@@ -556,18 +588,37 @@ export const emotionDetector = {
     this._startDrawLoop();
   },
 
+  _emitLifecycleState(status) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.dispatchEvent(
+    new CustomEvent('elevate:emotion-state', {
+      detail: { status }
+    })
+  );
+},
+
+  _clearOverlay() {
+    if (!this.canvasElement) return;
+
+    const ctx = this.canvasElement.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(
+      0,
+      0,
+      this.canvasElement.width,
+      this.canvasElement.height
+    );
+  },
+
   stopDetection() {
 
     this.detectionActive = false;
 
-    if (this._facemeshTimer) {
-
-      clearInterval(
-        this._facemeshTimer
-      );
-
-      this._facemeshTimer = null;
-    }
+    this._stopFacemeshLoop();
 
     if (this._inferenceTimer) {
 
@@ -600,6 +651,11 @@ export const emotionDetector = {
         emotionDetectionInterval: null
       });
     }
+
+    this._lastFacePrediction = null;
+    this._smoothedScores = null;
+    
+    this._clearOverlay();
   },
 
   // ============================================================
@@ -607,6 +663,10 @@ export const emotionDetector = {
   // ============================================================
 
   stopCamera() {
+    // Invalidate every pending start/getUserMedia/model-load continuation.
+    ++this._cameraGeneration;
+
+    this._emitLifecycleState('stopping');
 
     this.stopDetection();
 
@@ -628,8 +688,9 @@ export const emotionDetector = {
     this._lastFacePrediction = null;
     this._smoothedScores = null;
 
-    updateState({
+    this._clearOverlay();
 
+    updateState({
       cameraActive: false,
 
       cameraStream: null,
@@ -639,16 +700,15 @@ export const emotionDetector = {
       currentEmotion: 'neutral',
 
       usingSimulatedEmotions: false,
-
-      modelsLoaded:
-        Boolean(
-          this.tfjsModel &&
-          this.facemeshModel
-        )
+      modelsLoaded: Boolean(
+        this.tfjsModel &&
+        this.facemeshModel
+      )
     });
 
     this._updateCameraUI('off');
-  },
+    this._emitLifecycleState('off');
+},
 
   prepareForRouteChange() {
 
@@ -681,6 +741,7 @@ export const emotionDetector = {
       return;
     }
 
+    const generation = this._cameraGeneration;
     this.isRunningFacemesh = true;
 
     try {
@@ -737,11 +798,15 @@ export const emotionDetector = {
           this._faceDetectionCanvas,
           {
             flipHorizontal: false,
-            staticImageMode: true
+            staticImageMode: false
           }
         );
 
-      if (!this.detectionActive) {
+      if (
+        !this.detectionActive ||
+        !state.cameraActive ||
+        generation !== this._cameraGeneration
+      ) {
         return;
       }
 
@@ -767,6 +832,9 @@ export const emotionDetector = {
             'success',
             'Ready — face detected'
           );
+          
+          this._updateCameraUI('active');
+          this._emitLifecycleState('active');
         }
 
       } else {
@@ -825,6 +893,86 @@ export const emotionDetector = {
   },
 
   // ============================================================
+  // FACE DETECTION LOOP
+  // ============================================================
+  //
+  // Runs continuously rather than on a fixed setInterval. Each cycle
+  // waits for _runFaceDetection() to finish, then immediately asks
+  // for the next real camera frame via requestVideoFrameCallback
+  // (falling back to requestAnimationFrame in browsers without it).
+  //
+  // This is what actually removes the head-movement lag: the old
+  // fixed 85ms timer capped facemark updates at ~12fps no matter how
+  // fast the camera/backend could go, and the camera itself only
+  // delivers a new frame every ~33ms — so the timer and the real
+  // frame supply were out of sync. Tying the loop directly to frame
+  // delivery means every new frame gets processed as soon as it's
+  // available, bounded only by hardware.
+  //
+  // The emotion inference timer (INFERENCE_INTERVAL_MS) is separate
+  // and unaffected — it keeps running on its own fixed interval.
+
+  _startFacemeshLoop() {
+
+    if (!this.videoElement) {
+      return;
+    }
+
+    this._facemeshUsesVideoFrameCallback =
+      typeof this.videoElement.requestVideoFrameCallback === 'function';
+
+    const step = async () => {
+
+      if (!this.detectionActive) {
+        this._facemeshLoopHandle = null;
+        return;
+      }
+
+      await this._runFaceDetection();
+
+      if (!this.detectionActive) {
+        this._facemeshLoopHandle = null;
+        return;
+      }
+
+      this._facemeshLoopHandle =
+        this._facemeshUsesVideoFrameCallback
+          ? this.videoElement.requestVideoFrameCallback(step)
+          : requestAnimationFrame(step);
+    };
+
+    this._facemeshLoopHandle =
+      this._facemeshUsesVideoFrameCallback
+        ? this.videoElement.requestVideoFrameCallback(step)
+        : requestAnimationFrame(step);
+  },
+
+  _stopFacemeshLoop() {
+
+    if (!this._facemeshLoopHandle) {
+      return;
+    }
+
+    if (
+      this._facemeshUsesVideoFrameCallback &&
+      typeof this.videoElement?.cancelVideoFrameCallback === 'function'
+    ) {
+
+      this.videoElement.cancelVideoFrameCallback(
+        this._facemeshLoopHandle
+      );
+
+    } else {
+
+      cancelAnimationFrame(
+        this._facemeshLoopHandle
+      );
+    }
+
+    this._facemeshLoopHandle = null;
+  },
+
+  // ============================================================
   // EMOTION INFERENCE
   // ============================================================
 
@@ -839,14 +987,25 @@ export const emotionDetector = {
       return;
     }
 
+    const generation = this._cameraGeneration;
+
     this.isRunningInference = true;
 
     try {
+      const face = this._lastFacePrediction;
 
       const scores =
-        await this._predictFace(
-          this._lastFacePrediction
-        );
+        await this._predictFace(face);
+
+      // The inference may have completed after Stop
+      // or after a newer camera session started.
+      if (
+        !this.detectionActive ||
+        !state.cameraActive ||
+        generation !== this._cameraGeneration
+      ) {
+        return;
+      }
 
       if (
         !scores ||
@@ -885,6 +1044,11 @@ export const emotionDetector = {
       );
 
     } catch (error) {
+      if (
+        generation !== this._cameraGeneration
+      ) {
+        return;
+      }
 
       console.warn(
         '[EmotionDetector] inference error:',
@@ -895,7 +1059,7 @@ export const emotionDetector = {
 
       this.isRunningInference = false;
     }
-  },
+},
 
   async _predictFace(face) {
 
@@ -905,7 +1069,7 @@ export const emotionDetector = {
     const video =
       this.videoElement;
 
-    const scores =
+    const output =
       tf.tidy(() => {
 
         let image =
@@ -935,33 +1099,31 @@ export const emotionDetector = {
             true
           );
 
-                /*
-         * IMPORTANT:
+        /*
+         * Production model expects float32 RGB
+         * values in [0,1].
          *
-         * The production model expects float32 RGB
-         * values in the range [0,1].
-         *
-         * The Keras model then internally performs:
-         *
+         * Keras Rescaling layer performs:
          * [0,1] -> [-1,1]
-         *
-         * through its Rescaling layer.
          */
+        image =
+          image
+            .toFloat()
+            .div(255.0)
+            .expandDims(0);
 
-        image = image
-          .toFloat()
-          .div(255.0)
-          .expandDims(0);
-
-        const output =
-          this.tfjsModel.predict(image);
-
-        return Array.from(
-          output.dataSync()
-        );
+        return this.tfjsModel.predict(image);
       });
 
-    return scores;
+    try {
+      const values =
+        await output.data();
+
+      return Array.from(values);
+
+    } finally {
+      output.dispose();
+    }
   },
 
   // ============================================================
@@ -1311,20 +1473,58 @@ export const emotionDetector = {
     const face =
       this._lastFacePrediction;
 
-    if (!face?.boundingBox) {
+    if (!face) {
       return;
     }
 
-    const [
-      x1,
-      y1
-    ] =
+    const keypoints =
+      Array.isArray(face.keypoints)
+        ? face.keypoints
+        : [];
+
+    if (keypoints.length > 0) {
+      ctx.fillStyle =
+        'rgba(76,245,133,0.75)';
+
+      for (const point of keypoints) {
+        const x =
+          Number(point.x);
+
+        const y =
+          Number(point.y);
+
+        if (
+          !Number.isFinite(x) ||
+          !Number.isFinite(y)
+        ) {
+          continue;
+        }
+
+        ctx.beginPath();
+
+        ctx.arc(
+          x,
+          y,
+          1.15,
+          0,
+          Math.PI * 2
+        );
+
+        ctx.fill();
+      }
+
+      return;
+    }
+
+    // Safe fallback if landmarks are unavailable.
+    if (!face.boundingBox) {
+      return;
+    }
+
+    const [x1, y1] =
       face.boundingBox.topLeft;
 
-    const [
-      x2,
-      y2
-    ] =
+    const [x2, y2] =
       face.boundingBox.bottomRight;
 
     ctx.strokeStyle =
@@ -1335,14 +1535,8 @@ export const emotionDetector = {
     ctx.strokeRect(
       x1,
       y1,
-      Math.max(
-        1,
-        x2 - x1
-      ),
-      Math.max(
-        1,
-        y2 - y1
-      )
+      Math.max(1, x2 - x1),
+      Math.max(1, y2 - y1)
     );
   },
 
@@ -1478,44 +1672,22 @@ export const emotionDetector = {
         'emotionIndicator'
       );
 
-    const startBtn =
-      document.getElementById(
-        'startCamera'
-      );
-
-    const stopBtn =
-      document.getElementById(
-        'stopCamera'
-      );
-
     if (
       status === 'starting' ||
+      status === 'searching' ||
       status === 'active'
     ) {
-
-      webcam?.classList.add(
-        'active'
-      );
-
-      placeholder?.classList.add(
-        'hidden'
-      );
-
+      webcam?.classList.add('active');
+    
+      placeholder?.classList.add('hidden');
+    
       if (indicator) {
         indicator.style.display =
-          'flex';
+          status === 'active'
+            ? 'flex'
+            : 'none';
       }
-
-      if (startBtn) {
-        startBtn.style.display =
-          'none';
-      }
-
-      if (stopBtn) {
-        stopBtn.style.display =
-          'flex';
-      }
-
+    
       if (dot) {
 
         dot.className =
@@ -1523,69 +1695,49 @@ export const emotionDetector = {
             ? 'status-dot active'
             : 'status-dot loading';
       }
-
+    
       if (text) {
-
-        text.textContent =
-          status === 'active'
-            ? 'Active'
-            : 'Initialising…';
+        if (status === 'starting') {
+          text.textContent = 'Initialising…';
+        } else if (status === 'searching') {
+          text.textContent = 'Detecting face…';
+        } else {
+          text.textContent = 'Active';
+        }
       }
-
-    } else if (
-      status === 'off'
-    ) {
-
-      webcam?.classList.remove(
-        'active'
-      );
-
-      placeholder?.classList.remove(
-        'hidden'
-      );
-
+    
+    } else if (status === 'off') {
+      webcam?.classList.remove('active');
+    
+      placeholder?.classList.remove('hidden');
+    
       if (indicator) {
-
-        indicator.style.display =
-          'none';
+        indicator.style.display = 'none';
       }
-
-      if (startBtn) {
-
-        startBtn.style.display =
-          'flex';
-      }
-
-      if (stopBtn) {
-
-        stopBtn.style.display =
-          'none';
-      }
-
+    
       if (dot) {
-
-        dot.className =
-          'status-dot';
+        dot.className = 'status-dot';
       }
-
+    
       if (text) {
-
-        text.textContent =
-          'Camera Off';
+        text.textContent = 'Camera Off';
       }
-
-    } else {
-
+    
+    } else if (status === 'error') {
+      webcam?.classList.remove('active');
+    
+      placeholder?.classList.remove('hidden');
+    
+      if (indicator) {
+        indicator.style.display = 'none';
+      }
+    
       if (dot) {
-
-        dot.className =
-          'status-dot error';
+        dot.className = 'status-dot error';
       }
-
+    
       if (text) {
-
-        text.textContent =
-          'Camera Error';
+        text.textContent = 'Camera Error';
       }
     }
   },
