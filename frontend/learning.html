@@ -233,7 +233,7 @@
                   <i class="fas fa-list"></i> Topic (Syllabus)
                 </label>
                 <select id="topicSelect" class="form-select">
-                  <option value="">All topics</option>
+                  <option value="">Select topic</option>
                 </select>
                 <small class="text-muted">Select one topic before pressing OK to load questions</small>
               </section>
@@ -367,7 +367,10 @@
       TenantRouter.wireButtons();
     </script>
 
-    <!-- Main application - loads AFTER TensorFlow.js -->
+    <!-- KaTeX is loaded on demand by main.js so it also works
+     when Learning is injected through the student shell router. -->
+     
+    <!-- Main application - loads AFTER KaTeX and TensorFlow.js -->
     <script type="module" src="js/main.js"></script>
   </body>
 </html>

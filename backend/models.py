@@ -1,5 +1,10 @@
 from datetime import datetime, timezone
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.dialects.postgresql import JSONB
+db = SQLAlchemy()
+# PostgreSQL uses JSONB for efficient JSON storage/indexing.
+# Other databases fall back to normal JSON for test portability.
+JSONBType = db.JSON().with_variant(JSONB(), "postgresql")
 
 # --- pgvector fallback ---
 try:
@@ -8,7 +13,6 @@ try:
 except ImportError:
     VectorType = None
 
-db = SQLAlchemy()
 if VectorType is None:
     VectorType = db.Text
 
@@ -120,6 +124,66 @@ class Question(db.Model):
     
     answers = db.relationship("AnswerLog", back_populates="question", lazy="dynamic")
     generated_by_user = db.relationship("User", primaryjoin="User.id==Question.generated_by", viewonly=True)
+    
+    
+class PracticeQuestion(db.Model):
+    __tablename__ = "practice_questions"
+
+    id = db.Column(db.BigInteger, primary_key=True)
+
+    # Canonical values:
+    # grade: elementary | middle | high | college
+    # subject: science | technology | engineering | mathematics
+    # difficulty: easy | medium | hard
+    grade = db.Column(db.String(32), nullable=False, index=True)
+    subject = db.Column(db.String(64), nullable=False, index=True)
+    syllabus_topic = db.Column(db.String(128), nullable=False, index=True)
+    difficulty = db.Column(db.String(16), nullable=False, index=True)
+
+    # Question content
+    question_text = db.Column(db.Text, nullable=False)
+    options = db.Column(JSONBType, nullable=False)
+    correct_index = db.Column(db.SmallInteger, nullable=False)
+    explanation = db.Column(db.Text, nullable=False)
+
+    # SHA-256 fingerprint used for exact duplicate prevention.
+    question_fingerprint = db.Column(
+        db.String(64),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    # Generation/audit metadata
+    generation_model = db.Column(db.String(128), nullable=True, index=True)
+    generation_batch_id = db.Column(db.String(128), nullable=True, index=True)
+    generation_meta = db.Column(JSONBType, nullable=True)
+
+    created_at = db.Column(
+        db.DateTime,
+        default=utcnow,
+        nullable=False,
+        index=True,
+    )
+
+    __table_args__ = (
+        db.CheckConstraint(
+            "correct_index >= 0 AND correct_index <= 3",
+            name="ck_practice_questions_correct_index",
+        ),
+        db.CheckConstraint(
+            "grade IN ('elementary', 'middle', 'high', 'college')",
+            name="ck_practice_questions_grade",
+        ),
+        db.CheckConstraint(
+            "subject IN ('science', 'technology', 'engineering', 'mathematics')",
+            name="ck_practice_questions_subject",
+        ),
+        db.CheckConstraint(
+            "difficulty IN ('easy', 'medium', 'hard')",
+            name="ck_practice_questions_difficulty",
+        ),
+    )
 
 
 class UserProgress(db.Model):
@@ -173,7 +237,16 @@ class AnswerLog(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    question_id = db.Column(db.Integer, db.ForeignKey("questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_id = db.Column(db.Integer, db.ForeignKey("questions.id", ondelete="CASCADE"), nullable=True, index=True)
+    practice_question_id = db.Column(
+        db.BigInteger,
+        db.ForeignKey(
+            "practice_questions.id",
+            ondelete="CASCADE",
+        ),
+        nullable=True,
+        index=True,
+    )
     selected_index = db.Column(db.Integer, nullable=False)
     is_correct = db.Column(db.Boolean, nullable=False)
     time_spent = db.Column(db.Integer, nullable=False)
@@ -186,6 +259,10 @@ class AnswerLog(db.Model):
 
     user = db.relationship("User", back_populates="answers")
     question = db.relationship("Question", back_populates="answers")
+    practice_question = db.relationship(
+        "PracticeQuestion",
+        foreign_keys=[practice_question_id],
+    )
     test = db.relationship("TestResult", back_populates="answers")
 
 

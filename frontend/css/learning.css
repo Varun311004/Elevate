@@ -412,6 +412,38 @@
   color: #1f2937;
   margin-bottom: 25px;
   line-height: 1.65;
+
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.question-text .katex {
+  white-space: normal;
+}
+
+.question-text .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.question-text .katex-display,
+.answer-options .katex-display,
+.feedback-message .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25rem 0;
+}
+
+.answer-options .katex {
+  font-size: 1em;
+}
+
+.feedback-message .katex-display {
+  margin: 0.75rem 0;
 }
 
 .answer-options {
@@ -436,6 +468,11 @@
   padding: 12px 14px;
   transition: all 0.2s ease;
   background: #fff;
+
+  /* Keep radio button and answer text on the same row. */
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
 }
 
 .answer-options .option:hover {
@@ -443,15 +480,44 @@
   box-shadow: 0 6px 16px rgba(74, 108, 247, 0.12);
 }
 
-.answer-options .option input {
-  margin-right: 10px;
+.answer-options .option input[type="radio"] {
+  margin: 4px 0 0;
+  flex: 0 0 auto;
 }
 
 .answer-options .option label {
   margin: 0;
-  width: 100%;
+  width: auto;
+  flex: 1;
+  min-width: 0;
   cursor: pointer;
   font-weight: 500;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+/* Submitted answer state: options are read-only until
+   the next question is displayed. */
+.answer-options.options-locked {
+  pointer-events: none;
+}
+
+.answer-options.options-locked .option {
+  cursor: default;
+}
+
+.answer-options.options-locked .option:hover {
+  border-color: #dbe3f0;
+  box-shadow: none;
+}
+
+.answer-options.options-locked .option input[type="radio"] {
+  cursor: not-allowed;
+}
+
+.answer-options.options-locked .option label {
+  cursor: default;
+  pointer-events: none;
 }
 
 .answer-options .option.option-selected {
@@ -1011,4 +1077,125 @@
   0%, 100% { transform: translateX(0); }
   25% { transform: translateX(-5px); }
   75% { transform: translateX(5px); }
+}
+
+
+/* ---------------------------------------------------------------------------
+   Learning question review + timer polish
+   --------------------------------------------------------------------------- */
+.question-container {
+  overflow: visible;
+}
+
+.question-header {
+  position: relative;
+  gap: 14px;
+  min-height: 46px;
+}
+
+.question-header > :first-child {
+  min-width: 0;
+}
+
+.question-timer {
+  flex: 0 0 auto;
+  z-index: 20;
+  position: relative;
+  margin-left: auto !important;
+  visibility: visible;
+  opacity: 1;
+}
+
+.question-timer.is-active {
+  display: flex !important;
+}
+
+.question-timer #questionTimerDisplay {
+  min-width: 3.5ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+#feedbackMessage {
+  margin-top: 18px;
+}
+
+.answer-review-card {
+  margin: 0;
+  padding: 18px 20px;
+  border-radius: 12px;
+  border-width: 1px;
+  line-height: 1.6;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+}
+
+.answer-review-card > strong {
+  display: block;
+  font-size: 1.05rem;
+  margin-bottom: 8px;
+}
+
+.answer-review-card .feedback-line {
+  margin-top: 7px;
+}
+
+.answer-review-card .feedback-line strong {
+  font-weight: 700;
+}
+
+.answer-review-card .explanation-line {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(15, 23, 42, 0.12);
+}
+
+.answer-review-card .explanation-title {
+  display: block;
+  margin-bottom: 7px;
+  font-weight: 700;
+}
+
+.answer-review-card .explanation-content {
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.answer-review-card .explanation-content .katex-display {
+  margin: 0.75em 0;
+}
+
+.question-text .katex,
+.answer-options .katex,
+.feedback-message .katex {
+  line-height: 1.25;
+}
+
+.question-text .katex-display,
+.answer-options .katex-display,
+.feedback-message .katex-display {
+  margin: 0.7em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.answer-options .option {
+  min-height: 56px;
+  align-items: flex-start;
+}
+
+.answer-options .option label {
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .question-header {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .question-timer {
+    margin-left: auto !important;
+  }
 }

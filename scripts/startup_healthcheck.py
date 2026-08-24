@@ -189,14 +189,14 @@ def _read_counts() -> tuple[int, int]:
         sys.path.insert(0, str(ROOT))
 
     from backend.app import create_app
-    from backend.models import Question, User
+    from backend.models import PracticeQuestion, User
 
     if _APP_CACHE is None:
         _APP_CACHE = create_app("development")
 
     app = _APP_CACHE
     with app.app_context():
-        return User.query.count(), Question.query.count()
+        return User.query.count(), PracticeQuestion.query.count()
 
 
 def _ensure_users(user_count: int) -> None:
@@ -234,17 +234,15 @@ def _ensure_questions(question_count: int) -> None:
     # Non-destructive top-up path for normal startup.
     missing = max(0, min_questions - question_count)
     groups = 63
-    per_topic = max(8, min(50, (missing + groups - 1) // groups))
 
     _run(
         [
             str(PYTHON_EXE),
             "backend/seed_questions.py",
-            "--augment-large",
-            "--per-topic",
-            str(per_topic),
+            "--mode",
+            "demo",
         ],
-        f"Top-up question bank with synthetic coverage (per-topic={per_topic})",
+        f"Top-up question bank",
     )
 
 

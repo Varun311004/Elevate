@@ -251,6 +251,63 @@ export const api = {
       return await api.request(endpoint, { method: 'GET' });
     },
 
+    async practice(params = {}) {
+      const query = new URLSearchParams();
+        
+      if (params.grade) {
+        query.append('grade', params.grade);
+      }
+    
+      if (params.subject) {
+        query.append('subject', params.subject);
+      }
+    
+      if (params.topic) {
+        query.append('topic', params.topic);
+      }
+    
+      if (params.difficulty) {
+        query.append('difficulty', params.difficulty);
+      }
+    
+      if (params.count) {
+        query.append('count', params.count);
+      }
+    
+      if (params.exclude_answered !== undefined) {
+        query.append(
+          'exclude_answered',
+          params.exclude_answered
+        );
+      }
+    
+      return await api.request(
+        `/questions/practice?${query.toString()}`,
+        {
+          method: 'GET',
+        }
+      );
+    },
+    
+    async practiceSubmit(
+      questionId,
+      selectedIndex,
+      timeSpent,
+      emotion = null
+    ) {
+      return await api.request(
+        `/questions/practice/${questionId}/submit`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            selected_index: selectedIndex,
+            time_spent: timeSpent,
+            emotion,
+          }),
+        }
+      );
+    },
+
     async get(id) {
       return await api.request(`/questions/${id}`, { method: 'GET' });
     },

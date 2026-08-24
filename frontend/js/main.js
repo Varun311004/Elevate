@@ -9,6 +9,7 @@ import { adaptiveLearning } from './adaptive-learning.js';
 import { progressTracker } from './progress-tracker.js';
 import { storage } from './storage.js';
 import { TenantRouter } from './tenant-router.js';
+import { getCurriculumTopics } from './curriculum.js';
 
 console.log('Elevate: main.js loaded successfully');
 
@@ -887,12 +888,295 @@ const STEM_SUBJECTS = [
   { slug: 'mathematics', label: 'Mathematics', icon: 'fa-calculator' }
 ];
 
-const STEM_TOPICS_FALLBACK = {
-  science: ['physics', 'chemistry', 'biology', 'earth_science', 'environmental_science'],
-  technology: ['computer_fundamentals', 'programming', 'ai_basics', 'networks', 'internet_safety'],
-  engineering: ['design_thinking', 'structures', 'mechanics', 'electrical_basics', 'robotics'],
-  mathematics: ['arithmetic', 'algebra', 'geometry', 'statistics', 'calculus']
-};
+let _katexLoadPromise = null;
+
+const KATEX_VERSION = '0.18.4';
+
+const KATEX_CSS_URL =
+  `https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/katex.min.css`;
+
+const KATEX_JS_URL =
+  `https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/katex.min.js`;
+
+const KATEX_AUTO_RENDER_URL =
+  `https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/contrib/auto-render.min.js`;
+
+function loadScriptOnce(src, globalName) {
+  return new Promise((resolve, reject) => {
+    if (globalName && window[globalName]) {
+      resolve();
+      return;
+    }
+
+    const existing =
+      document.querySelector(
+        `script[data-elevate-katex="${src}"]`
+      );
+
+    if (existing) {
+      existing.addEventListener(
+        'load',
+        () => resolve(),
+        { once: true }
+      );
+
+      existing.addEventListener(
+        'error',
+        () => reject(
+          new Error(
+            `Failed to load ${src}`
+          )
+        ),
+        { once: true }
+      );
+
+      return;
+    }
+
+    const script =
+      document.createElement('script');
+
+    script.src = src;
+    script.async = true;
+    script.dataset.elevateKatex = src;
+
+    script.onload = () => resolve();
+
+    script.onerror = () => reject(
+      new Error(
+        `Failed to load ${src}`
+      )
+    );
+
+    document.head.appendChild(script);
+  });
+}
+
+function ensureKaTeXLoaded() {
+  if (
+    window.katex &&
+    typeof window.renderMathInElement === 'function'
+  ) {
+    return Promise.resolve();
+  }
+
+  if (_katexLoadPromise) {
+    return _katexLoadPromise;
+  }
+
+  _katexLoadPromise = new Promise(
+    async (resolve, reject) => {
+      try {
+        /*
+         * Load KaTeX stylesheet exactly once.
+         */
+        if (
+          !document.querySelector(
+            'link[data-elevate-katex-css]'
+          )
+        ) {
+          const link =
+            document.createElement('link');
+
+          link.rel = 'stylesheet';
+          link.href = KATEX_CSS_URL;
+          link.dataset.elevateKatexCss = 'true';
+
+          document.head.appendChild(link);
+        }
+
+        /*
+         * KaTeX core must be available before
+         * auto-render extension is loaded.
+         */
+        await loadScriptOnce(
+          KATEX_JS_URL,
+          'katex'
+        );
+
+        await loadScriptOnce(
+          KATEX_AUTO_RENDER_URL,
+          'renderMathInElement'
+        );
+
+        if (
+          !window.katex ||
+          typeof window.renderMathInElement !== 'function'
+        ) {
+          throw new Error(
+            'KaTeX loaded but auto-render API is unavailable.'
+          );
+        }
+
+        console.log(
+          `✅ KaTeX ${KATEX_VERSION} loaded successfully.`
+        );
+
+        resolve();
+      } catch (error) {
+        console.error(
+          '❌ Failed to load KaTeX:',
+          error
+        );
+
+        _katexLoadPromise = null;
+        reject(error);
+      }
+    }
+  );
+
+  return _katexLoadPromise;
+}
+
+async function renderLearningMath(
+  container,
+  attempt = 0
+) {
+  if (!container) {
+    return;
+  }
+
+  try {
+    await ensureKaTeXLoaded();
+
+    /*
+     * Some generated options/explanations contain raw LaTeX
+     * such as:
+     *
+     *   \begin{pmatrix} ... \end{pmatrix}
+     *
+     * without \( ... \) delimiters.
+     *
+     * Auto-render cannot detect those as math by itself.
+     *
+     * Normalize only text nodes so we do not disturb the
+     * HTML structure already rendered by the learning UI.
+     */
+    const walker =
+      document.createTreeWalker(
+        container,
+        NodeFilter.SHOW_TEXT,
+        {
+          acceptNode(node) {
+            /*
+             * Never modify text that is already inside
+             * a KaTeX-generated element.
+             */
+            const parent =
+              node.parentElement;
+          
+            if (
+              parent &&
+              parent.closest('.katex, .katex-display')
+            ) {
+              return NodeFilter.FILTER_REJECT;
+            }
+          
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        }
+      );
+
+    const textNodes = [];
+
+    let currentNode;
+
+    while (
+      currentNode =
+        walker.nextNode()
+    ) {
+      textNodes.push(currentNode);
+    }
+
+    for (
+      const textNode
+      of textNodes
+    ) {
+      const text =
+        textNode.nodeValue || '';
+
+      if (!text.trim()) {
+        continue;
+      }
+
+      const normalized =
+        normalizeLearningMathSource(
+          text
+        );
+
+      if (
+        normalized !== text
+      ) {
+        textNode.nodeValue =
+          normalized;
+      }
+    }
+
+    const text =
+      container.textContent || '';
+
+    const hasMath =
+      text.includes('\\(') ||
+      text.includes('\\[') ||
+      text.includes('$$') ||
+      /(^|[^\\])\$[^$]+\$/m.test(text);
+
+    if (!hasMath) {
+      return;
+    }
+
+    window.renderMathInElement(
+      container,
+      {
+        delimiters: [
+          {
+            left: '$$',
+            right: '$$',
+            display: true
+          },
+          {
+            left: '\\[',
+            right: '\\]',
+            display: true
+          },
+          {
+            left: '\\(',
+            right: '\\)',
+            display: false
+          },
+          {
+            left: '$',
+            right: '$',
+            display: false
+          }
+        ],
+
+        throwOnError: false,
+        strict: false,
+        trust: false
+      }
+    );
+  } catch (error) {
+    if (attempt < 5) {
+      window.setTimeout(
+        () => {
+          renderLearningMath(
+            container,
+            attempt + 1
+          );
+        },
+        100
+      );
+
+      return;
+    }
+
+    console.warn(
+      'KaTeX render failed:',
+      error
+    );
+  }
+}
 
 function normalizeTopicSlug(value) {
   return String(value || '')
@@ -909,6 +1193,127 @@ function formatTopicLabel(slug) {
   return words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 }
 
+/*
+ * Normalize LaTeX that arrives without explicit KaTeX
+ * delimiters.
+ *
+ * Example:
+ *   \begin{pmatrix} ... \end{pmatrix}
+ *
+ * becomes:
+ *   \(\begin{pmatrix} ... \end{pmatrix}\)
+ *
+ * Expressions that already contain delimiters are left
+ * completely unchanged.
+ */
+function normalizeLearningMathSource(value) {
+  const text = String(value ?? '');
+
+  if (!text.trim()) {
+    return text;
+  }
+
+  /*
+   * Already has explicit math delimiters.
+   * Do not modify it.
+   */
+  const alreadyDelimited =
+    text.includes('\\(') ||
+    text.includes('\\[') ||
+    text.includes('$$') ||
+    /(^|[^\\])\$[^$]+\$/m.test(text);
+
+  /*
+   * Detect the bad case where the entire sentence has been
+   * accidentally wrapped in math delimiters.
+   */
+  const fullyWrappedInlineMath =
+    /^\s*\\\([\s\S]*\\\)\s*$/.test(text);
+  
+  if (fullyWrappedInlineMath) {
+    const inner =
+      text
+        .replace(/^\s*\\\(/, '')
+        .replace(/\\\)\s*$/, '')
+        .trim();
+  
+    /*
+     * If the inner content contains ordinary prose words,
+     * this is almost certainly an incorrectly wrapped question.
+     */
+    const containsProse =
+      /\b(if|is|are|was|were|what|which|find|determine|calculate|the|a|an|of|and|with|by|in|for|from|then)\b/i.test(inner);
+  
+    if (containsProse) {
+      return normalizeLearningMathSource(
+        inner
+      );
+    }
+  
+    return text;
+  }
+
+  if (alreadyDelimited) {
+    return text;
+  }
+
+  /*
+   * Pure/bare math expressions should be wrapped.
+   *
+   * Examples:
+   *   \begin{pmatrix} ... \end{pmatrix}
+   *   \frac{1}{2}
+   *   \sqrt{x}
+   *
+   * But ordinary prose containing a math command must NOT
+   * be wrapped as one giant math expression.
+   */
+  const trimmed = text.trim();
+
+  const isPureLatexExpression =
+    /^\\begin\{[a-zA-Z*]+\}[\s\S]*\\end\{[a-zA-Z*]+\}$/.test(trimmed) ||
+    /^\\(?:frac|dfrac|tfrac|sqrt|sum|prod|int|lim|mathbb|mathbf|mathrm|mathcal|pmatrix|bmatrix|vmatrix|cases)\b[\s\S]*$/.test(trimmed);
+
+  if (isPureLatexExpression) {
+    return `\\(${text}\\)`;
+  }
+
+  /*
+   * Mixed prose:
+   *
+   * "The matrix is \begin{pmatrix}...\end{pmatrix}."
+   *
+   * Only wrap the actual LaTeX fragment, not the prose.
+   */
+  let normalized = text;
+
+  normalized = normalized.replace(
+    /\\begin\{([a-zA-Z*]+)\}[\s\S]*?\\end\{\1\}/g,
+    match => `\\(${match}\\)`
+  );
+
+  /*
+   * Handle common standalone math commands embedded in prose,
+   * such as \mathbb{R}, \frac{1}{2}, \sqrt{x}, etc.
+   */
+  normalized = normalized.replace(
+    /\\mathbb\{[^{}]+\}(?:\^\{[^{}]+\}|_[^_\s.,;!?]+)?/g,
+    match => `\\(${match}\\)`
+  );
+
+  normalized = normalized.replace(
+    /\\(?:frac|dfrac|tfrac)\{[^{}]+\}\{[^{}]+\}/g,
+    match => `\\(${match}\\)`
+  );
+
+  normalized = normalized.replace(
+    /\\sqrt(?:\[[^\]]+\])?\{[^{}]+\}/g,
+    match => `\\(${match}\\)`
+  );
+
+  return normalized;
+}
+
 let learningReadinessWatcher = null;
 let learningVisibilityHandlerAttached = false;
 let cameraLifecycleListenerAttached = false;
@@ -916,6 +1321,9 @@ let assignedLearningTests = [];
 let selectedAssignedLearning = null;
 let activeAssignedTestSession = null;
 let learningMode = 'practice';
+let topicOptionsRequestId = 0;
+let questionLoadRequestId = 0;
+let questionLoadInProgress = false;
 
 function getSelectedLearningMode() {
   if (isAssignedLearningMode()) return 'assigned';
@@ -1049,26 +1457,22 @@ function refreshLearningCameraGate() {
     controlsEnabled
   );
 
+  /*
+   * Camera readiness controls whether the user can
+   * interact with learning controls/answers.
+   *
+   * It must NOT destroy or hide an already-loaded
+   * question.
+   */
   setQuestionInteractionLocked(
     cameraRequired && !ready
   );
 
-  if (
-    cameraRequired &&
-    !ready
-  ) {
-    stopQuestionTimer();
-
-    const questionContainer =
-      document.getElementById(
-        'questionContainer'
-      );
-
-    if (questionContainer) {
-      questionContainer.style.display =
-        'none';
-    }
-  }
+  /*
+   * Do not hide #questionContainer here.
+   * Question visibility is controlled by the question
+   * loading/session lifecycle.
+   */
 
   updateLearningStatusCard();
   updateLearningApplyButtonState();
@@ -1158,11 +1562,61 @@ function hasLearningSelectionComplete() {
   if (getSelectedLearningMode() === 'assigned') {
     return isAssignedLearningMode();
   }
-  const gradeValue = state.selectedGrade || document.getElementById('gradeSelect')?.value;
-  const topicValue = state.selectedTopic || document.getElementById('topicSelect')?.value;
-  const difficultyValue = getSelectedPracticeDifficulty();
-  const countValue = state.questionsPerSession || parseInt(document.getElementById('countSelect')?.value || '0', 10);
-  return Boolean(gradeValue && state.selectedSubject && topicValue && difficultyValue && countValue);
+
+  const gradeSelect =
+    document.getElementById('gradeSelect');
+
+  const topicSelect =
+    document.getElementById('topicSelect');
+
+  const difficultySelect =
+    document.getElementById('difficultySelect');
+
+  const countSelect =
+    document.getElementById('countSelect');
+
+  const gradeValue =
+    String(
+      gradeSelect?.value ||
+      state.selectedGrade ||
+      ''
+    ).trim();
+
+  const subjectValue =
+    String(
+      state.selectedSubject || ''
+    ).trim();
+
+  const topicValue =
+    String(
+      topicSelect?.value ||
+      state.selectedTopic ||
+      ''
+    ).trim();
+
+  const difficultyValue =
+    String(
+      difficultySelect?.value ||
+      state.selectedPracticeDifficulty ||
+      'adaptive'
+    ).trim();
+
+  const countValue =
+    parseInt(
+      countSelect?.value ||
+      state.questionsPerSession ||
+      '0',
+      10
+    );
+
+  return Boolean(
+    gradeValue &&
+    subjectValue &&
+    topicValue &&
+    difficultyValue &&
+    Number.isFinite(countValue) &&
+    countValue > 0
+  );
 }
 
 function getSelectedPracticeDifficulty() {
@@ -1194,18 +1648,32 @@ function setQuestionInteractionLocked(locked) {
 
 function markLearningSelectionPending(showMessage = false) {
   stopQuestionTimer();
-  updateState({ questions: [], currentQuestionIndex: 0, questionStartTime: null });
 
-  const questionContainer = document.getElementById('questionContainer');
+  updateState({
+    questions: [],
+    currentQuestionIndex: 0,
+    questionStartTime: null,
+  });
+
+  const questionContainer =
+    document.getElementById('questionContainer');
+
   if (questionContainer) {
     questionContainer.style.display = 'none';
   }
 
-  if (showMessage) {
-    utils.showNotification('Selection updated. Press OK to load questions.', 'info');
-  }
+  /*
+   * Keep every currently selected control exactly as it is.
+   * Only the loaded question session is invalidated.
+   */
 
   updateLearningApplyButtonState();
+
+  if (showMessage) {
+    console.log(
+      '📝 Learning selection changed. Waiting for OK.'
+    );
+  }
 }
 
 async function applyLearningSelection() {
@@ -1250,15 +1718,62 @@ function ensureLearningVisibilityRecoveryHandler() {
 
 function startLearningReadinessWatcher() {
   if (learningReadinessWatcher) {
-    clearInterval(
-      learningReadinessWatcher
-    );
-
+    clearInterval(learningReadinessWatcher);
     learningReadinessWatcher = null;
   }
 
+  let lastReadyState = null;
+  let lastCameraRequired = null;
+
   const applyLearningReadinessState = () => {
-    refreshLearningCameraGate();
+    const cameraRequired = isCameraRequiredForLearning();
+    const ready = isLearningControlReady();
+
+    if (
+      ready !== lastReadyState ||
+      cameraRequired !== lastCameraRequired
+    ) {
+      setLearningControlsEnabled(
+        cameraRequired ? ready : true
+      );
+
+      updateLearningStatusCard();
+
+      /*
+       * IMPORTANT:
+       * Do NOT hide an already-loaded question just because
+       * face detection has a temporary state transition.
+       *
+       * The question should only be hidden before a question
+       * session exists or when the user explicitly changes
+       * their learning selection.
+       */
+      const hasLoadedQuestions =
+        Array.isArray(state.questions) &&
+        state.questions.length > 0;
+
+      if (!hasLoadedQuestions) {
+        setQuestionInteractionLocked(false);
+      } else {
+        setQuestionInteractionLocked(
+          cameraRequired && !ready
+        );
+      }
+
+      updateLearningApplyButtonState();
+
+      lastReadyState = ready;
+      lastCameraRequired = cameraRequired;
+
+      if (ready && cameraRequired) {
+        console.log(
+          '✅ Learning readiness confirmed.'
+        );
+      }
+    } else {
+      updateLearningStatusCard();
+      updateLearningApplyButtonState();
+    }
   };
 
   applyLearningReadinessState();
@@ -1498,27 +2013,49 @@ function setupSubjectSelector() {
     const subjectButtons = subjectContainer.querySelectorAll('.subject-btn');
     subjectButtons.forEach(btn => {
       btn.addEventListener('click', async () => {
+      
         if (!isLearningControlReady()) {
-          utils.showNotification('Start camera and wait for face detection to unlock subjects.', 'warning');
+          utils.showNotification(
+            'Start camera and wait for face detection to unlock subjects.',
+            'warning'
+          );
           return;
         }
-
-        subjectButtons.forEach(b => b.classList.remove('active'));
+      
+        subjectButtons.forEach(b =>
+          b.classList.remove('active')
+        );
+      
         btn.classList.add('active');
-        setLearningMode('practice', { preserveAssignedSelection: false });
-        
-        const subject = btn.dataset.subject;
-        updateState({ selectedSubject: subject, selectedTopic: null });
-        
-        console.log('\ud83d\udcda Subject selected:', subject);
-        
-        // Update performance widget when subject selected
+      
+        setLearningMode(
+          'practice',
+          { preserveAssignedSelection: false }
+        );
+      
+        const subject =
+          String(btn.dataset.subject || '').trim();
+      
+        updateState({
+          selectedSubject: subject,
+          selectedTopic: null
+        });
+      
+        /*
+         * Immediately invalidate the previous question set.
+         */
+        markLearningSelectionPending(false);
+      
+        /*
+         * Update UI immediately, then load topics.
+         */
+        updateLearningApplyButtonState();
+      
         updateSubjectPerformanceWidget();
-        
-        // Update topic selector to reflect available topics for this subject/grade
+      
         await updateTopicOptions();
-
-        markLearningSelectionPending(true);
+      
+        updateLearningApplyButtonState();
       });
     });
   }
@@ -1526,44 +2063,128 @@ function setupSubjectSelector() {
 
 // Populate topic selector based on selected subject and grade
 async function updateTopicOptions() {
-  const topicSelect = document.getElementById('topicSelect');
-  if (!topicSelect) return;
-  try {
-    const grade = state.selectedGrade || state.currentGrade || 'middle';
-    const subject = state.selectedSubject || null;
-    const { api } = await import('./api.js');
-    const data = await api.questions.topics({ grade, subject });
-    const apiTopics = Array.isArray(data.topics) ? data.topics : [];
-    const fallback = subject ? (STEM_TOPICS_FALLBACK[subject] || []) : [];
-    const all = [...apiTopics, ...fallback]
-      .map(normalizeTopicSlug)
-      .filter(Boolean);
-    const topics = [...new Set(all)].sort();
+  const topicSelect =
+    document.getElementById('topicSelect');
 
-    topicSelect.innerHTML = `<option value="">All topics</option>` + topics
-      .map(t => `<option value="${t}">${formatTopicLabel(t)}</option>`)
-      .join('');
-
-    if (state.selectedTopic) {
-      topicSelect.value = normalizeTopicSlug(state.selectedTopic);
-    }
-  } catch (err) {
-    console.error('Failed to load topics:', err);
-    const subject = state.selectedSubject || null;
-    const fallback = (subject ? (STEM_TOPICS_FALLBACK[subject] || []) : [])
-      .map(normalizeTopicSlug)
-      .filter(Boolean);
-    const topics = [...new Set(fallback)].sort();
-    topicSelect.innerHTML = `<option value="">All topics</option>` + topics
-      .map(t => `<option value="${t}">${formatTopicLabel(t)}</option>`)
-      .join('');
+  if (!topicSelect) {
+    return;
   }
+
+  const requestId =
+    ++topicOptionsRequestId;
+
+  const grade =
+    state.selectedGrade ||
+    state.currentGrade ||
+    'middle';
+
+  const subject =
+    state.selectedSubject || '';
+
+  if (!subject) {
+    topicSelect.innerHTML =
+      '<option value="">Select topic</option>';
+
+    updateState({
+      selectedTopic: null
+    });
+
+    topicSelect.disabled = true;
+    updateLearningApplyButtonState();
+    return;
+  }
+
+  /*
+   * curriculum.js is the SINGLE source of truth.
+   *
+   * "adaptive" returns the complete set of topics
+   * defined for this grade + subject across all
+   * difficulty levels.
+   *
+   * No API topic request.
+   * No fallback list.
+   * No independently maintained topic list.
+   */
+  const curriculumTopics =
+    getCurriculumTopics(
+      grade,
+      subject,
+      'adaptive'
+    );
+
+  /*
+   * Ignore stale requests if another grade/subject
+   * selection happened while this function was running.
+   */
+  if (requestId !== topicOptionsRequestId) {
+    return;
+  }
+
+  const topics = [
+    ...new Set(
+      curriculumTopics
+        .map(topic => String(topic || '').trim())
+        .filter(Boolean)
+    )
+  ].sort((a, b) =>
+    a.localeCompare(
+      b,
+      undefined,
+      { sensitivity: 'base' }
+    )
+  );
+
+  /*
+   * Preserve the currently selected topic when
+   * it is still valid for the new grade + subject.
+   */
+  const previousTopic =
+    String(
+      state.selectedTopic ||
+      topicSelect.value ||
+      ''
+    ).trim();
+
+  topicSelect.innerHTML =
+    '<option value="">Select topic</option>' +
+    topics
+      .map(topic => `
+        <option value="${topic}">
+          ${topic}
+        </option>
+      `)
+      .join('');
+
+  if (
+    previousTopic &&
+    topics.includes(previousTopic)
+  ) {
+    topicSelect.value =
+      previousTopic;
+
+    updateState({
+      selectedTopic: previousTopic
+    });
+  } else {
+    topicSelect.value = '';
+
+    updateState({
+      selectedTopic: null
+    });
+  }
+
+  topicSelect.disabled =
+    isCameraRequiredForLearning()
+      ? !isLearningControlReady()
+      : false;
+
+  updateLearningApplyButtonState();
 }
 
 function setupTopicSelector() {
   const topicSelect = document.getElementById('topicSelect');
   if (!topicSelect) return;
-  topicSelect.innerHTML = `<option value="">All topics</option>`;
+  topicSelect.innerHTML = `<option value="">Select topic</option>`;
 }
 
 // Helper function to ensure grade and subject controls are disabled
@@ -1620,12 +2241,31 @@ function setupQuestionHandlers() {
   }
 
   const difficultySelect = document.getElementById('difficultySelect');
+
   if (difficultySelect) {
     difficultySelect.addEventListener('change', (e) => {
-      setLearningMode('practice', { preserveAssignedSelection: false });
-      const selectedPracticeDifficulty = String(e.target.value || 'adaptive').toLowerCase();
-      updateState({ selectedPracticeDifficulty });
-      markLearningSelectionPending(state.selectedSubject != null);
+      setLearningMode(
+        'practice',
+        { preserveAssignedSelection: false }
+      );
+
+      const selectedPracticeDifficulty =
+        String(
+          e.target.value || 'adaptive'
+        ).toLowerCase();
+
+      updateState({
+        selectedPracticeDifficulty
+      });
+
+      /*
+       * IMPORTANT:
+       * Difficulty does NOT change the topic list.
+       * Keep the currently selected topic.
+       */
+      markLearningSelectionPending(
+        state.selectedSubject != null
+      );
     });
   }
 
@@ -1745,8 +2385,31 @@ function finishPracticeSession() {
 }
 
 async function loadQuestionsForCurrentSelection() {
-  const questionContainer = document.getElementById('questionContainer');
-  
+  const questionContainer =
+    document.getElementById('questionContainer');
+
+  if (questionLoadInProgress) {
+    console.warn(
+      '⏳ Question loading already in progress.'
+    );
+    return;
+  }
+
+  const requestId =
+    ++questionLoadRequestId;
+
+  questionLoadInProgress = true;
+
+  const applyBtn =
+    document.getElementById('applySelectionBtn');
+
+  if (applyBtn) {
+    applyBtn.disabled = true;
+    applyBtn.classList.add('loading');
+    applyBtn.innerHTML =
+      '<i class="fas fa-spinner fa-spin"></i> Loading...';
+  }
+
   try {
     const { api } = await import('./api.js');
 
@@ -1800,9 +2463,10 @@ async function loadQuestionsForCurrentSelection() {
       return;
     }
     
-    // Show question container and loading state
+    // Keep the question container hidden until valid
+    // questions have actually been received.
     if (questionContainer) {
-      questionContainer.style.display = 'block';
+      questionContainer.style.display = 'none';
     }
     
     // Initialize adaptive learning for this subject
@@ -1841,90 +2505,89 @@ async function loadQuestionsForCurrentSelection() {
     console.log('⚙️ Using difficulty:', difficultyToUse, '(Configured default:', configuredDefaultDifficulty + ')');
     
     // Respect topic and count selections
-    const topic = state.selectedTopic || null;
-    const rawCount = state.questionsPerSession || (document.getElementById('countSelect') ? parseInt(document.getElementById('countSelect').value, 10) : (settings.questionsPerSession || 10));
-    const count = Math.max(1, Math.min(50, Number.isFinite(rawCount) ? Number(rawCount) : 10));
+    const topic =
+      state.selectedTopic || null;
 
-    const params = {
-      grade: gradeToLoad,
-      subject: state.selectedSubject,
-      difficulty: difficultyToUse,
-      limit: count,
-      exclude_answered: true,
-    };
+    const rawCount =
+      state.questionsPerSession
+      || (
+        document.getElementById(
+          'countSelect'
+        )
+        ? parseInt(
+            document.getElementById(
+              'countSelect'
+            ).value,
+            10
+          )
+        : 10
+      );
     
-    console.log('🔍 Question API params:', params);
+    const count = Math.max(
+      1,
+      Math.min(
+        50,
+        Number.isFinite(
+          rawCount
+        )
+          ? Number(rawCount)
+          : 10
+      )
+    );
 
-    let response;
-    // Fast path: pull from existing generated bank first to avoid request timeout.
-    const listParams = { ...params };
-    if (topic) listParams.topic = topic;
-    response = await api.questions.list(listParams);
-
-    if (response.adaptive && response.adaptive.recommended_difficulty) {
-      updateState({ serverAdaptiveDifficulty: response.adaptive.recommended_difficulty });
+    if (!topic) {
+      utils.showNotification(
+        'Please select a topic before starting practice.',
+        'warning'
+      );
+      return;
     }
 
-    console.log('✅ API Response: ' + (response.questions?.length || 0) + ' questions found');
-    
-    // Fallback 1: Try without difficulty filter if no questions found
-    if (!response.questions || response.questions.length === 0) {
-      console.log('⚠️ No questions with recommended difficulty, trying all difficulties...');
-      const paramsWithoutDifficulty = {
+    console.log(
+      '🔍 Practice-bank query:',
+      {
         grade: gradeToLoad,
         subject: state.selectedSubject,
-        topic: topic || undefined,
-        limit: count,
-        exclude_answered: true,
-      };
-      response = await api.questions.list(paramsWithoutDifficulty);
-      console.log('🔄 Retry result: ' + (response.questions?.length || 0) + ' questions found');
-    }
-    
-    // Fallback 2: Try without grade filter if still no questions
-    if (!response.questions || response.questions.length === 0) {
-      console.log('⚠️ No questions for selected grade, trying all grades...');
-      const paramsOnlySubject = {
-        subject: state.selectedSubject,
-        topic: topic || undefined,
-        limit: count,
-        exclude_answered: true,
-      };
-      response = await api.questions.list(paramsOnlySubject);
-      console.log('🔄 Retry with all grades: ' + (response.questions?.length || 0) + ' questions found');
-    // Final top-up path: if still short and topic selected, trigger generation once.
-    if (topic && (!response.questions || response.questions.length < count)) {
-      try {
-        const generated = await api.questions.generate({
-          grade: gradeToLoad,
-          subject: state.selectedSubject,
-          topic,
-          count,
-          difficulty: difficultyToUse,
-          exclude_answered: true,
-        });
-        if (generated && Array.isArray(generated.questions) && generated.questions.length > 0) {
-          response = generated;
-        }
-      } catch (genErr) {
-        console.warn('Topic generation fallback failed:', genErr);
+        topic,
+        difficulty: difficultyToUse,
+        count,
       }
-    }
+    );
 
-      
-      if (response.questions && response.questions.length > 0) {
-        utils.showNotification('No ' + utils.getGradeDisplayName(gradeToLoad) + ' questions available. Showing questions from other grades.', 'info');
-      }
-    }
+    const response =
+      await api.questions.practice({
+        grade: gradeToLoad,
+        subject: state.selectedSubject,
+        topic,
+        difficulty: difficultyToUse,
+        count,
+        exclude_answered: true,
+      });
     
-    const cleanedQuestions = normalizeQuestionBatch(response.questions || [], count);
+    console.log(
+      '✅ Practice-bank response:',
+      response.questions?.length || 0,
+      'questions'
+    );
+
+    const cleanedQuestions =
+      normalizeQuestionBatch(
+        response.questions || [],
+        count
+      );
 
     if (cleanedQuestions.length > 0) {
       // Store questions in state
       updateState({ questions: cleanedQuestions, currentQuestionIndex: 0 });
       
+      // The question session is now valid.
+      if (questionContainer) {
+        questionContainer.style.display = 'block';
+      }
+
       // Load first question
       displayCurrentQuestion();
+
       if (cleanedQuestions.length < count) {
         utils.showNotification(`Loaded ${cleanedQuestions.length} valid questions (requested ${count}).`, 'info');
       } else {
@@ -1953,9 +2616,21 @@ async function loadQuestionsForCurrentSelection() {
     }
 
     utils.showNotification('Failed to load questions. Please try again.', 'error');
-    
-    if (questionContainer) {
-      questionContainer.innerHTML = '\n        <div class="empty-state">\n          <div class="empty-state-icon">\n            <i class="fas fa-exclamation-triangle"></i>\n          </div>\n          <h3 class="empty-state-title">Error Loading Questions</h3>\n          <p class="empty-state-text">\n            Unable to load questions. Please check your connection and try again.\n          </p>\n        </div>\n      ';
+  } finally {
+    /*
+     * Restore button only for the latest request.
+     */
+    if (requestId === questionLoadRequestId) {
+      questionLoadInProgress = false;
+
+      if (applyBtn) {
+        applyBtn.classList.remove('loading');
+
+        applyBtn.innerHTML =
+          '<i class="fas fa-check-circle"></i> OK';
+
+        updateLearningApplyButtonState();
+      }
     }
   }
 }
@@ -1978,7 +2653,11 @@ function displayQuestion(question) {
   const categoryEl = document.getElementById('questionCategory');
   const difficultyEl = document.getElementById('difficultyBadge');
   
-  if (questionTextEl) questionTextEl.textContent = question.text;
+  if (questionTextEl) {
+    questionTextEl.textContent = question.text;
+    renderLearningMath( questionTextEl );
+  }
+  
   if (categoryEl) categoryEl.textContent = question.subject;
   if (difficultyEl) {
     difficultyEl.textContent = question.difficulty;
@@ -1987,13 +2666,70 @@ function displayQuestion(question) {
   
   // Display options
   if (optionsContainer) {
+    optionsContainer.classList.remove('options-locked');
     const options = Array.isArray(question.options) ? question.options : [];
-    optionsContainer.innerHTML = options.map((option, index) => `
-      <div class="option" data-index="${index}">
-        <input type="radio" name="answer" id="option${index}" value="${index}">
-        <label for="option${index}">${option}</label>
-      </div>
-    `).join('');
+    optionsContainer.innerHTML = '';
+
+    options.forEach(
+      (option, index) => {
+      
+        const optionEl =
+          document.createElement(
+            'div'
+          );
+        
+        optionEl.className =
+          'option';
+        
+        optionEl.dataset.index =
+          String(index);
+        
+        const radio =
+          document.createElement(
+            'input'
+          );
+        
+        radio.type = 'radio';
+        radio.name = 'answer';
+        radio.id = `option${index}`;
+        radio.value = String(index);
+        
+        const label =
+          document.createElement(
+            'label'
+          );
+        
+        label.htmlFor =
+          `option${index}`;
+        
+        label.textContent =
+          normalizeLearningMathSource(option);
+        
+        optionEl.append(
+          radio,
+          label
+        );
+      
+        optionsContainer.append(
+          optionEl
+        );
+      
+        optionEl.addEventListener(
+          'click',
+          () => {
+            if (radio.disabled) {
+              return;
+            }
+          
+            radio.checked = true;
+          }
+        );
+      }
+    );
+
+    renderLearningMath(
+      optionsContainer
+    );
 
     if (options.length < 2) {
       optionsContainer.innerHTML = '<div class="alert alert-warning">This question has invalid options and cannot be answered. Please reload your selection.</div>';
@@ -2003,7 +2739,15 @@ function displayQuestion(question) {
     const optionNodes = optionsContainer.querySelectorAll('.option');
     optionNodes.forEach(opt => {
       opt.addEventListener('click', () => {
-        const radio = opt.querySelector('input[type="radio"]');
+        const radio =
+          opt.querySelector(
+            'input[type="radio"]'
+          );
+        
+        if (!radio || radio.disabled) {
+          return;
+        }
+      
         radio.checked = true;
       });
     });
@@ -2015,9 +2759,20 @@ function displayQuestion(question) {
   if (submitBtn) submitBtn.style.display = 'inline-block';
   if (nextBtn) nextBtn.style.display = 'none';
   
-  // Clear feedback
-  const feedbackEl = document.getElementById('feedbackMessage');
-  if (feedbackEl) feedbackEl.innerHTML = '';
+  // Clear and hide previous answer feedback.
+  const feedbackEl =
+    document.getElementById(
+      'feedbackMessage'
+    );
+
+  if (feedbackEl) {
+    feedbackEl.innerHTML = '';
+
+    feedbackEl.hidden = true;
+    feedbackEl.style.display = 'none';
+    feedbackEl.style.visibility = 'hidden';
+    feedbackEl.style.opacity = '0';
+  }
   
   // Track question start time
   updateState({ questionStartTime: Date.now() });
@@ -2040,16 +2795,55 @@ function highlightAnswerReview(selectedIndex, correctIndex) {
 
 function renderAnswerFeedback({ isCorrect, selectedText, correctText, explanationText, timeout }) {
   const feedbackEl = document.getElementById('feedbackMessage');
-  if (!feedbackEl) return;
+  if (!feedbackEl) {
+    console.error( '❌ feedbackMessage element not found.' );
+    return;
+  }
 
-  const statusClass = isCorrect ? 'alert-success' : 'alert-danger';
+  /*
+   * Explicitly reveal the feedback region.
+   *
+   * Do not rely on global CSS or Bootstrap defaults
+   * to determine whether the review is visible.
+   */
+  feedbackEl.hidden = false;
+  feedbackEl.style.display = 'block';
+  feedbackEl.style.visibility = 'visible';
+  feedbackEl.style.opacity = '1';
+
+  const statusClass =
+    isCorrect
+      ? 'alert-success'
+      : 'alert-danger';
   const statusTitle = isCorrect ? 'Correct!' : 'Incorrect';
   const timeoutLine = timeout ? '<div class="feedback-line"><strong>Note:</strong> Time expired before selection.</div>' : '';
   const selectedLine = `<div class="feedback-line"><strong>Your answer:</strong> ${selectedText || 'No option selected'}</div>`;
   const correctLine = `<div class="feedback-line"><strong>Correct answer:</strong> ${correctText || 'Not available'}</div>`;
   const explanationLine = explanationText
-    ? `<div class="feedback-line"><strong>Explanation:</strong> ${explanationText}</div>`
-    : '';
+  ? `
+      <div class="feedback-line explanation-line">
+        <strong class="explanation-title">
+          Explanation
+        </strong>
+
+        <div class="explanation-content">
+          ${normalizeLearningMathSource(
+            explanationText
+          )}
+        </div>
+      </div>
+    `
+  : `
+      <div class="feedback-line explanation-line">
+        <strong class="explanation-title">
+          Explanation
+        </strong>
+
+        <div class="explanation-content">
+          Explanation is not available for this question.
+        </div>
+      </div>
+    `;
 
   feedbackEl.innerHTML = `
     <div class="alert ${statusClass} answer-review-card">
@@ -2060,6 +2854,20 @@ function renderAnswerFeedback({ isCorrect, selectedText, correctText, explanatio
       ${explanationLine}
     </div>
   `;
+
+  console.log(
+    '📖 Feedback rendered:',
+    {
+      visible:
+        feedbackEl.style.display,
+      explanationLength:
+        explanationText.length,
+      explanationPresent:
+        Boolean(explanationText)
+    }
+  );
+
+  renderLearningMath( feedbackEl );
 }
 
 async function handleQuestionSubmit(options = {}) {
@@ -2100,7 +2908,21 @@ async function handleQuestionSubmit(options = {}) {
         explanation: '',
         progress: null,
       }))
-      : await api.questions.submit(question.id, selectedIndex, timeSpent, currentEmotion);
+      : (
+        question.source === 'practice_bank'
+          ? await api.questions.practiceSubmit(
+              question.id,
+              selectedIndex,
+              timeSpent,
+              currentEmotion
+            )
+          : await api.questions.submit(
+              question.id,
+              selectedIndex,
+              timeSpent,
+              currentEmotion
+            )
+      );
     
     // Record answer in adaptive learning system with response time and question ID
     const adaptiveResult = adaptiveLearning.recordAnswer(
@@ -2149,8 +2971,31 @@ async function handleQuestionSubmit(options = {}) {
     
     // Load settings to check if explanations should be shown
     const settings = getEffectiveSettings();
-    const explanationText = settings.showExplanations ? (result.explanation || '') : '';
+
+    /*
+     * Explanations are always shown after submission.
+     *
+     * Prefer the submit response because the backend returns
+     * the authoritative explanation for the submitted question.
+     */
+    const explanationText =
+      String(
+        result?.explanation ||
+        result?.explanation_text ||
+        question?.explanation ||
+        ''
+      ).trim();
     
+    console.log('📖 Explanation resolved:', {
+      submissionExplanation:
+        result?.explanation || '',
+      questionExplanation:
+        question?.explanation || '',
+      finalExplanation:
+        explanationText,
+      hasExplanation:
+        Boolean(explanationText)
+    });
     console.log('🎵 Sound settings:', { 
       enabled: settings.enableSoundEffects, 
       correct: result.correct 
@@ -2204,9 +3049,26 @@ async function handleQuestionSubmit(options = {}) {
     if (submitBtn) submitBtn.style.display = 'none';
     if (nextBtn) nextBtn.style.display = autoAdvanceOnTimeout ? 'none' : 'inline-block';
     
-    // Disable option selection
-    const options = document.querySelectorAll('input[name="answer"]');
-    options.forEach(opt => opt.disabled = true);
+    // Permanently lock option selection after submission.
+    const optionsContainer =
+      document.getElementById('answerOptions');
+
+    if (optionsContainer) {
+      optionsContainer.classList.add(
+        'options-locked'
+      );
+    }
+
+    const options =
+      document.querySelectorAll(
+        'input[name="answer"]'
+      );
+    
+    options.forEach(
+      opt => {
+        opt.disabled = true;
+      }
+    );
 
     if (autoAdvanceOnTimeout) {
       setTimeout(() => {
@@ -2298,20 +3160,53 @@ function loadNextQuestion(options = {}) {
 }
 
 function ensureTimerIsActiveForCurrentQuestion() {
-  const settings = getEffectiveSettings();
+  const storedSettings = storage.load('userSettings') || {};
+
+  const settings = {
+    ...getEffectiveSettings(),
+    ...storedSettings
+  };
+
+  if (storedSettings && typeof storedSettings === 'object') {
+    updateState({
+      userSettings: {
+        ...getEffectiveSettings(),
+        ...storedSettings
+      }
+    });
+  }
+
   if (!settings.enableTimer) {
     stopQuestionTimer();
     return;
   }
 
   const question = state.questions?.[state.currentQuestionIndex];
-  if (!question) return;
 
-  const expectedTimerKey = `${question.id || 'q'}-${state.currentQuestionIndex}`;
-  const timerEl = document.getElementById('questionTimer');
-  const timerVisible = timerEl && timerEl.style.display !== 'none';
+  if (!question) {
+    return;
+  }
 
-  if (!questionTimerInterval || activeQuestionTimerKey !== expectedTimerKey || !timerVisible) {
+  const expectedTimerKey =
+    `${question.id || 'q'}-${state.currentQuestionIndex}`;
+
+  const timerEl =
+    document.getElementById(
+      'questionTimer'
+    );
+
+  const timerVisible =
+    Boolean(
+      timerEl &&
+      timerEl.style.display !== 'none' &&
+      timerEl.style.visibility !== 'hidden'
+    );
+
+  if (
+    !questionTimerInterval ||
+    activeQuestionTimerKey !== expectedTimerKey ||
+    !timerVisible
+  ) {
     startQuestionTimer(expectedTimerKey);
   }
 }
@@ -3792,81 +4687,359 @@ function getAudioContext() {
   return globalAudioContext;
 }
 
-function startQuestionTimer(questionKey = null) {
-  const settings = getEffectiveSettings();
+function ensureQuestionTimerElement() {
+  let timerEl =
+    document.getElementById(
+      'questionTimer'
+    );
 
-  // Always clear any stale interval before evaluating current setting.
-  stopQuestionTimer();
-  
-  if (!settings.enableTimer) return;
+  let timerDisplayEl =
+    document.getElementById(
+      'questionTimerDisplay'
+    );
 
-  const durationSeconds = parseInt(settings.timerDuration, 10);
-  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
-  
-  activeQuestionTimerKey = questionKey || `${state.currentQuestionIndex}-${Date.now()}`;
-  questionTimeRemaining = durationSeconds;
-  updateTimerDisplay();
-  
-  // Show timer UI
-  const timerEl = document.getElementById('questionTimer');
-  if (timerEl) {
-    timerEl.style.display = 'flex';
-    timerEl.style.visibility = 'visible';
-    timerEl.style.opacity = '1';
-    timerEl.classList.remove('timer-warning', 'timer-danger');
-    console.log('👁️ Timer element shown:', {
-      display: timerEl.style.display,
-      visibility: timerEl.style.visibility,
-      parent: timerEl.parentElement?.className
-    });
-  } else {
-    console.error('❌ Timer element not found!');
+  /*
+   * The Learning page can be injected into the student
+   * shell after the original HTML has been parsed.
+   *
+   * Therefore, guarantee that the timer DOM exists
+   * before trying to use it.
+   */
+  if (!timerEl) {
+    const questionHeader =
+      document.querySelector(
+        '#questionContainer .question-header'
+      );
+
+    if (!questionHeader) {
+      console.warn(
+        '⚠️ Question header not found; cannot create timer yet.'
+      );
+
+      return null;
+    }
+
+    timerEl =
+      document.createElement('div');
+
+    timerEl.id =
+      'questionTimer';
+
+    timerEl.className =
+      'question-timer';
+
+    timerEl.innerHTML = `
+      <i class="fas fa-clock"></i>
+      <span
+        id="questionTimerDisplay"
+        style="font-weight: 600; font-size: 1.1rem;"
+      >
+        0:00
+      </span>
+    `;
+
+    questionHeader.appendChild(
+      timerEl
+    );
+
+    console.log(
+      '✅ Created question timer element dynamically.'
+    );
   }
-  
-  console.log('✅ Timer started:', questionTimeRemaining, 'seconds for key:', activeQuestionTimerKey);
-  
-  questionTimerInterval = setInterval(() => {
-    if (!activeQuestionTimerKey) {
-      stopQuestionTimer();
-      return;
-    }
 
-    questionTimeRemaining--;
-    updateTimerDisplay();
-    
-    // Warning at 25% time remaining
-    if (questionTimeRemaining <= durationSeconds * 0.25 && questionTimeRemaining > durationSeconds * 0.1) {
-      if (timerEl) timerEl.classList.add('timer-warning');
+  if (!timerDisplayEl) {
+    timerDisplayEl =
+      timerEl.querySelector(
+        '#questionTimerDisplay'
+      );
+
+    if (!timerDisplayEl) {
+      timerDisplayEl =
+        document.createElement('span');
+
+      timerDisplayEl.id =
+        'questionTimerDisplay';
+
+      timerDisplayEl.style.fontWeight =
+        '600';
+
+      timerDisplayEl.style.fontSize =
+        '1.1rem';
+
+      timerDisplayEl.textContent =
+        '0:00';
+
+      timerEl.appendChild(
+        timerDisplayEl
+      );
     }
-    
-    // Danger at 10% time remaining
-    if (questionTimeRemaining <= durationSeconds * 0.1) {
-      if (timerEl) {
-        timerEl.classList.remove('timer-warning');
-        timerEl.classList.add('timer-danger');
+  }
+
+  /*
+   * Make sure dynamically-created timers receive
+   * the same layout/style as the normal HTML timer.
+   */
+  timerEl.classList.add(
+    'question-timer'
+  );
+
+  timerEl.style.marginLeft =
+    'auto';
+
+  timerEl.style.display =
+    'none';
+
+  timerEl.style.visibility =
+    'hidden';
+
+  timerEl.style.opacity =
+    '0';
+
+  return timerEl;
+}
+
+function startQuestionTimer(
+  questionKey = null
+) {
+  const storedSettings =
+    storage.load(
+      'userSettings'
+    ) || {};
+
+  const settings = {
+    ...getEffectiveSettings(),
+    ...storedSettings
+  };
+
+  if (
+    storedSettings &&
+    typeof storedSettings === 'object'
+  ) {
+    updateState({
+      userSettings: {
+        ...getEffectiveSettings(),
+        ...storedSettings
       }
-    }
-    
-    // Time's up
-    if (questionTimeRemaining <= 0) {
-      stopQuestionTimer();
-      handleTimerExpired(settings.autoSubmit);
-    }
-  }, 1000);
+    });
+  }
+
+  /*
+   * Always stop any previous timer before starting
+   * a new question timer.
+   */
+  stopQuestionTimer();
+
+  if (!settings.enableTimer) {
+    console.log(
+      '⏱️ Timer disabled in user settings.'
+    );
+    return;
+  }
+
+  const durationSeconds =
+    parseInt(
+      settings.timerDuration,
+      10
+    );
+
+  if (
+    !Number.isFinite(
+      durationSeconds
+    ) ||
+    durationSeconds <= 0
+  ) {
+    console.warn(
+      '⚠️ Invalid timer duration:',
+      settings.timerDuration
+    );
+    return;
+  }
+
+  /*
+   * Guarantee that the timer DOM exists.
+   */
+  const timerEl =
+    ensureQuestionTimerElement();
+
+  if (!timerEl) {
+    console.error(
+      '❌ Unable to create/find question timer.'
+    );
+
+    return;
+  }
+
+  const timerDisplayEl =
+    document.getElementById(
+      'questionTimerDisplay'
+    );
+
+  if (!timerDisplayEl) {
+    console.error(
+      '❌ questionTimerDisplay not found.'
+    );
+
+    return;
+  }
+
+  activeQuestionTimerKey =
+    questionKey ||
+    `${state.currentQuestionIndex}-${Date.now()}`;
+
+  questionTimeRemaining =
+    durationSeconds;
+
+  /*
+   * Make the timer visible BEFORE the first
+   * display update.
+   */
+  timerEl.classList.add(
+    'is-active'
+  );
+
+  timerEl.style.display =
+    'flex';
+
+  timerEl.style.visibility =
+    'visible';
+
+  timerEl.style.opacity =
+    '1';
+
+  timerEl.style.marginLeft =
+    'auto';
+
+  timerEl.classList.remove(
+    'timer-warning',
+    'timer-danger'
+  );
+
+  updateTimerDisplay();
+
+  console.log(
+    '✅ Timer started:',
+    durationSeconds,
+    'seconds for key:',
+    activeQuestionTimerKey
+  );
+
+  questionTimerInterval =
+    setInterval(() => {
+
+      /*
+       * If this timer was superseded by another
+       * question, stop this interval.
+       */
+      if (
+        !activeQuestionTimerKey
+      ) {
+        stopQuestionTimer();
+        return;
+      }
+
+      questionTimeRemaining--;
+
+      updateTimerDisplay();
+
+      /*
+       * Warning state at 25% remaining.
+       */
+      if (
+        questionTimeRemaining <=
+          durationSeconds * 0.25 &&
+        questionTimeRemaining >
+          durationSeconds * 0.10
+      ) {
+        timerEl.classList.add(
+          'timer-warning'
+        );
+      }
+
+      /*
+       * Danger state at 10% remaining.
+       */
+      if (
+        questionTimeRemaining <=
+        durationSeconds * 0.10
+      ) {
+        timerEl.classList.remove(
+          'timer-warning'
+        );
+
+        timerEl.classList.add(
+          'timer-danger'
+        );
+      }
+
+      /*
+       * Time has expired.
+       */
+      if (
+        questionTimeRemaining <= 0
+      ) {
+        clearInterval(
+          questionTimerInterval
+        );
+
+        questionTimerInterval =
+          null;
+
+        const autoSubmit =
+          Boolean(
+            settings.autoSubmit
+          );
+
+        console.log(
+          '⏰ Timer expired. Auto-submit:',
+          autoSubmit
+        );
+
+        stopQuestionTimer();
+
+        handleTimerExpired(
+          autoSubmit
+        );
+      }
+
+    }, 1000);
 }
 
 function stopQuestionTimer() {
   if (questionTimerInterval) {
-    clearInterval(questionTimerInterval);
-    questionTimerInterval = null;
+    clearInterval(
+      questionTimerInterval
+    );
+
+    questionTimerInterval =
+      null;
   }
-  activeQuestionTimerKey = null;
-  
-  const timerEl = document.getElementById('questionTimer');
-  if (timerEl) {
-    timerEl.style.display = 'none';
-    timerEl.classList.remove('timer-warning', 'timer-danger');
+
+  activeQuestionTimerKey =
+    null;
+
+  const timerEl =
+    document.getElementById(
+      'questionTimer'
+    );
+
+  if (!timerEl) {
+    return;
   }
+
+  timerEl.classList.remove(
+    'is-active',
+    'timer-warning',
+    'timer-danger'
+  );
+
+  timerEl.style.display =
+    'none';
+
+  timerEl.style.visibility =
+    'hidden';
+
+  timerEl.style.opacity =
+    '0';
 }
 
 // Simple sound effect player
@@ -3933,13 +5106,60 @@ function playTone(audioContext, type) {
 }
 
 function updateTimerDisplay() {
-  const timerEl = document.getElementById('questionTimer');
-  const timerDisplayEl = document.getElementById('questionTimerDisplay');
-  if (!timerEl || !timerDisplayEl) return;
-  
-  const minutes = Math.floor(questionTimeRemaining / 60);
-  const seconds = questionTimeRemaining % 60;
-  timerDisplayEl.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  let timerEl =
+    document.getElementById(
+      'questionTimer'
+    );
+
+  let timerDisplayEl =
+    document.getElementById(
+      'questionTimerDisplay'
+    );
+
+  /*
+   * Recover automatically if the shell recreated
+   * the Learning content.
+   */
+  if (!timerEl) {
+    timerEl =
+      ensureQuestionTimerElement();
+  }
+
+  if (!timerEl) {
+    return;
+  }
+
+  if (!timerDisplayEl) {
+    timerDisplayEl =
+      timerEl.querySelector(
+        '#questionTimerDisplay'
+      );
+  }
+
+  if (!timerDisplayEl) {
+    return;
+  }
+
+  const safeRemaining =
+    Math.max(
+      0,
+      Number(
+        questionTimeRemaining
+      ) || 0
+    );
+
+  const minutes =
+    Math.floor(
+      safeRemaining / 60
+    );
+
+  const seconds =
+    safeRemaining % 60;
+
+  timerDisplayEl.textContent =
+    `${minutes}:${seconds
+      .toString()
+      .padStart(2, '0')}`;
 }
 
 function handleTimerExpired(autoSubmit) {
@@ -3959,9 +5179,26 @@ function handleTimerExpired(autoSubmit) {
     
     // Always call handleQuestionSubmit directly for reliability
     setTimeout(() => {
-      console.log('⚡ Triggering handleQuestionSubmit directly');
-      handleQuestionSubmit({ forceTimeoutSubmit: true, autoAdvanceOnTimeout: true });
-    }, 100); // Small delay to ensure timer UI updates
+      /*
+       * Re-check that this is still the same question.
+       * This prevents an expired timer from submitting a
+       * question after the user has already moved on.
+       */
+      if (
+        !state.questions?.length
+      ) {
+        return;
+      }
+    
+      console.log(
+        '⚡ Triggering timeout submission'
+      );
+    
+      handleQuestionSubmit({
+        forceTimeoutSubmit: true,
+        autoAdvanceOnTimeout: true
+      });
+    }, 100);
     
   } else {
     // Just show a notification, let user submit manually

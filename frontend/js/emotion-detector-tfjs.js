@@ -80,6 +80,7 @@ export const emotionDetector = {
   _inferenceTimer: null,
 
   _lastFacePrediction: null,
+  _lastFaceDetectedAt: 0,
   _smoothedScores: null,
 
   _lastLogTime: 0,
@@ -686,6 +687,7 @@ export const emotionDetector = {
     }
 
     this._lastFacePrediction = null;
+    this._lastFaceDetectedAt = 0;
     this._smoothedScores = null;
 
     this._clearOverlay();
@@ -820,6 +822,9 @@ export const emotionDetector = {
         this._lastFacePrediction =
           this._normalizeFace(face);
 
+        this._lastFaceDetectedAt =
+          Date.now();
+
         if (
           !state.faceDetectionConfirmed
         ) {
@@ -841,10 +846,21 @@ export const emotionDetector = {
 
         this._lastFacePrediction = null;
 
-        if (
-          state.faceDetectionConfirmed
-        ) {
+        /*
+         * Do not immediately invalidate face detection because
+         * of a single missed frame.
+         *
+         * Allow a short grace period for natural head movement,
+         * camera jitter, or temporary FaceMesh misses.
+         */
+        const faceGracePeriodMs = 3000;
 
+        if (
+          state.faceDetectionConfirmed &&
+          this._lastFaceDetectedAt > 0 &&
+          Date.now() - this._lastFaceDetectedAt >
+            faceGracePeriodMs
+        ) {
           updateState({
             faceDetectionConfirmed: false
           });

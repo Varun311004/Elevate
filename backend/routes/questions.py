@@ -1,7 +1,16 @@
 """Question routes for fetching and submitting answers."""
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, g
-from ..models import db, Question, AnswerLog, UserProgress, EmotionLog, SubjectPerformance, User
+from ..models import (
+    db,
+    Question,
+    PracticeQuestion,
+    AnswerLog,
+    UserProgress,
+    EmotionLog,
+    SubjectPerformance,
+    User,
+)
 from ..security import require_auth, optional_auth, role_required
 from ..validation import sanitize_string
 from sqlalchemy import and_, func
@@ -152,6 +161,33 @@ def apply_topic_filter(query, topic_value: str):
     )
     return query.filter(db_normalized_topic == normalized_topic)
 
+def apply_practice_topic_filter(
+    query,
+    topic_value: str,
+):
+    normalized_topic = normalize_topic_token(
+        topic_value
+    )
+
+    if not normalized_topic:
+        return query
+
+    db_normalized_topic = func.replace(
+        func.replace(
+            func.lower(
+                PracticeQuestion.syllabus_topic
+            ),
+            "-",
+            "_",
+        ),
+        " ",
+        "_",
+    )
+
+    return query.filter(
+        db_normalized_topic
+        == normalized_topic
+    )
 
 @questions_bp.get("/")
 @optional_auth
@@ -508,15 +544,6 @@ def generate_and_persist():
         if service_result.get("ok"):
             payload = service_result.get("questions", [])
         
-        # If the AI fails, inject the fallback
-        if not service_result.get("ok") or len(payload) == 0:
-            payload = generate_fallback_mcqs(
-                topic=topic,
-                count=count,
-                difficulty=difficulty,
-                subject=subject,
-                grade=grade or 'high'
-            )
 
         new_questions = []
         for item in payload:
@@ -542,6 +569,498 @@ def generate_and_persist():
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': 'Failed to generate and persist questions', 'details': str(e)}), 500
+
+@questions_bp.get("/practice")
+@optional_auth
+def list_practice_questions():
+    """
+    Serve only finalized questions from practice_questions.
+
+    This endpoint is intentionally separate from the legacy questions table.
+    It performs exact grade/subject/topic/difficulty filtering and randomizes
+    the returned questions for a fresh practice session.
+    """
+    current_user = g.get("current_user")
+
+    try:
+        grade = sanitize_string(
+            request.args.get("grade")
+            or ""
+        ).strip().lower()
+
+        subject = sanitize_string(
+            request.args.get("subject")
+            or ""
+        ).strip().lower()
+
+        difficulty = sanitize_string(
+            request.args.get("difficulty")
+            or ""
+        ).strip().lower()
+
+        topic = request.args.get(
+            "topic"
+        )
+
+        exclude_answered = (
+            request.args.get(
+                "exclude_answered",
+                "true",
+            ).lower()
+            == "true"
+        )
+
+        try:
+            count = min(
+                max(
+                    int(
+                        request.args.get(
+                            "count",
+                            10,
+                        )
+                    ),
+                    1,
+                ),
+                50,
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return jsonify(
+                {
+                    "error": "count must be an integer"
+                }
+            ), 400
+
+        if not grade:
+            return jsonify(
+                {
+                    "error": "grade is required"
+                }
+            ), 400
+
+        if subject not in {
+            "science",
+            "technology",
+            "engineering",
+            "mathematics",
+        }:
+            return jsonify(
+                {
+                    "error": "invalid subject"
+                }
+            ), 400
+
+        if difficulty not in {
+            "easy",
+            "medium",
+            "hard",
+        }:
+            return jsonify(
+                {
+                    "error": "difficulty must be easy, medium, or hard"
+                }
+            ), 400
+
+        if not topic:
+            return jsonify(
+                {
+                    "error": "topic is required"
+                }
+            ), 400
+
+        query = PracticeQuestion.query.filter(
+            PracticeQuestion.grade
+            == grade,
+
+            func.lower(
+                PracticeQuestion.subject
+            )
+            == subject,
+
+            PracticeQuestion.difficulty
+            == difficulty,
+        )
+
+        query = apply_practice_topic_filter(
+            query,
+            topic,
+        )
+
+        if (
+            exclude_answered
+            and current_user
+        ):
+
+            answered_subquery = (
+                db.session.query(
+                    AnswerLog.practice_question_id
+                )
+                .filter(
+                    AnswerLog.user_id
+                    == current_user.id,
+
+                    AnswerLog.practice_question_id
+                    .isnot(None),
+                )
+                .subquery()
+            )
+
+            query = query.filter(
+                ~PracticeQuestion.id.in_(
+                    answered_subquery
+                )
+            )
+
+        questions = (
+            query
+            .order_by(
+                func.random()
+            )
+            .limit(count)
+            .all()
+        )
+
+        result = [
+            {
+                "id": q.id,
+                "subject": q.subject,
+                "grade": q.grade,
+                "difficulty": q.difficulty,
+                "text": q.question_text,
+                "options": q.options,
+                "syllabus_topic": q.syllabus_topic,
+                "explanation": q.explanation or "",
+                "source": "practice_bank",
+            }
+            for q in questions
+        ]
+
+        return jsonify(
+            {
+                "questions": result,
+                "count": len(result),
+                "requested": count,
+                "filters": {
+                    "grade": grade,
+                    "subject": subject,
+                    "topic": normalize_topic_token(
+                        topic
+                    ),
+                    "difficulty": difficulty,
+                    "exclude_answered": exclude_answered,
+                },
+            }
+        ), 200
+
+    except Exception as exc:
+
+        return jsonify(
+            {
+                "error": "Failed to fetch practice questions",
+                "details": str(exc),
+            }
+        ), 500
+
+@questions_bp.post("/practice/<int:question_id>/submit")
+@require_auth
+def submit_practice_answer(
+    question_id,
+):
+    """Submit an answer for a generated practice-bank question."""
+    current_user = g.current_user
+
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify(
+                {
+                    "error": "No data provided"
+                }
+            ), 400
+
+        selected_index = data.get(
+            "selected_index"
+        )
+
+        time_spent = data.get(
+            "time_spent",
+            0,
+        )
+
+        emotion = data.get(
+            "emotion"
+        )
+
+        if selected_index is None:
+            return jsonify(
+                {
+                    "error": "selected_index is required"
+                }
+            ), 400
+
+        try:
+            selected_index = int(
+                selected_index
+            )
+            time_spent = int(
+                time_spent
+            )
+        except (
+            ValueError,
+            TypeError,
+        ):
+            return jsonify(
+                {
+                    "error": "Invalid data types"
+                }
+            ), 400
+
+        question = db.session.get(
+            PracticeQuestion,
+            question_id,
+        )
+
+        if not question:
+            return jsonify(
+                {
+                    "error": "Practice question not found"
+                }
+            ), 404
+
+        if (
+            selected_index < -1
+            or selected_index
+            >= len(question.options)
+        ):
+            return jsonify(
+                {
+                    "error": "Invalid option index"
+                }
+            ), 400
+
+        is_correct = (
+            selected_index >= 0
+            and selected_index
+            == question.correct_index
+        )
+
+        answer_log = AnswerLog(
+            user_id=current_user.id,
+            question_id=None,
+            practice_question_id=question.id,
+            selected_index=selected_index,
+            is_correct=is_correct,
+            time_spent=time_spent,
+            difficulty_at_time=question.difficulty,
+            emotion_at_time=(
+                sanitize_string(emotion)
+                if emotion
+                else None
+            ),
+            answered_at=datetime.now(
+                timezone.utc
+            ),
+        )
+
+        db.session.add(
+            answer_log
+        )
+
+        if emotion:
+
+            db.session.add(
+                EmotionLog(
+                    user_id=current_user.id,
+                    emotion=sanitize_string(
+                        emotion
+                    ),
+                    confidence=1.0,
+                    context=(
+                        f"answering_{question.subject}"
+                    ),
+                    timestamp=datetime.now(
+                        timezone.utc
+                    ),
+                )
+            )
+
+        progress = (
+            UserProgress.query.filter_by(
+                user_id=current_user.id,
+                subject=question.subject,
+            ).first()
+        )
+
+        if not progress:
+
+            progress = UserProgress(
+                user_id=current_user.id,
+                subject=question.subject,
+                total_questions=0,
+                correct_answers=0,
+                current_difficulty=question.difficulty,
+            )
+
+            db.session.add(
+                progress
+            )
+
+        progress.total_questions = (
+            int(
+                progress.total_questions
+                or 0
+            )
+            + 1
+        )
+
+        if is_correct:
+
+            progress.correct_answers = (
+                int(
+                    progress.correct_answers
+                    or 0
+                )
+                + 1
+            )
+
+        progress.last_updated = (
+            datetime.now(
+                timezone.utc
+            )
+        )
+
+        accuracy = (
+            progress.correct_answers
+            / progress.total_questions
+            * 100
+            if progress.total_questions > 0
+            else 0
+        )
+
+        subject_perf = (
+            SubjectPerformance.query.filter_by(
+                user_id=current_user.id,
+                subject=question.subject,
+            ).first()
+        )
+
+        if not subject_perf:
+
+            subject_perf = SubjectPerformance(
+                user_id=current_user.id,
+                subject=question.subject,
+                accuracy=0.0,
+                streak=0,
+                best_streak=0,
+                total_time_spent=0,
+            )
+
+            db.session.add(
+                subject_perf
+            )
+
+        if is_correct:
+
+            subject_perf.streak = (
+                int(
+                    subject_perf.streak
+                    or 0
+                )
+                + 1
+            )
+
+            if (
+                subject_perf.streak
+                > int(
+                    subject_perf.best_streak
+                    or 0
+                )
+            ):
+                subject_perf.best_streak = (
+                    subject_perf.streak
+                )
+
+        else:
+
+            subject_perf.streak = 0
+
+        subject_perf.accuracy = accuracy
+
+        subject_perf.total_time_spent = (
+            int(
+                subject_perf.total_time_spent
+                or 0
+            )
+            + int(
+                time_spent
+                or 0
+            )
+        )
+
+        subject_perf.last_practiced_at = (
+            datetime.now(
+                timezone.utc
+            )
+        )
+
+        adaptive = compute_adaptive_signals(
+            user_id=current_user.id,
+            subject=question.subject,
+            concept=question.syllabus_topic,
+        )
+
+        if adaptive.get(
+            "recommended_difficulty"
+        ):
+            progress.current_difficulty = (
+                adaptive[
+                    "recommended_difficulty"
+                ]
+            )
+
+        db.session.commit()
+
+        return jsonify(
+            {
+                "correct": is_correct,
+                "correct_index": question.correct_index,
+                "explanation": question.explanation,
+
+                "progress": {
+                    "subject": question.subject,
+                    "total_questions": (
+                        progress.total_questions
+                    ),
+                    "correct_answers": (
+                        progress.correct_answers
+                    ),
+                    "accuracy": round(
+                        accuracy,
+                        2,
+                    ),
+                    "current_difficulty": (
+                        progress.current_difficulty
+                    ),
+                },
+
+                "adaptive": adaptive,
+            }
+        ), 200
+
+    except Exception as exc:
+
+        db.session.rollback()
+
+        return jsonify(
+            {
+                "error": "Failed to submit practice answer",
+                "details": str(exc),
+            }
+        ), 500
+
 
 @questions_bp.get('/topics')
 @optional_auth

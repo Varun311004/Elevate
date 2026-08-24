@@ -138,3 +138,7 @@ test-results/
 tests/videos/
 tests/screenshots/
 tests/traces/
+
+#seed questions generation state and pending tasks
+backend/data/pending_validation/
+backend/data/question_generation_state.json
