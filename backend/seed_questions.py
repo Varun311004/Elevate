@@ -48,7 +48,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import (bindparam, create_engine, text)
 from sqlalchemy.engine import Engine
 
 
@@ -61,7 +61,6 @@ PROJECT_ROOT = BACKEND_DIR.parent
 DATA_DIR = BACKEND_DIR / "data"
 
 STATE_FILE = DATA_DIR / "question_generation_state.json"
-SYLLABUS_FILE = DATA_DIR / "syllabus_topics.json"
 
 # Optional file where you can paste in the CURRENT rate limits shown on
 # your own Google AI Studio / Groq console, without touching code.
@@ -105,6 +104,12 @@ DEFAULT_PRODUCTION_BATCH_GROQ = 4
 VALIDATOR_BATCH_DEMO = 5
 VALIDATOR_BATCH_PRODUCTION = 10
 
+# Small grace period after receiving the first question.
+#
+# This gives the producer thread a moment to place other questions
+# into the same validator queue before the worker decides its batch size.
+VALIDATOR_BATCH_GATHER_DELAY = 0.10
+
 DEFAULT_HTTP_TIMEOUT = 120
 
 WARNING_LEVELS = (
@@ -113,10 +118,19 @@ WARNING_LEVELS = (
     0.95,
 )
 
-VALIDATOR_MODEL = "gemini-3.1-flash-lite"
+VALIDATOR_MODELS = (
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
+)
 VALIDATOR_API_KEY_ENV = "GEMINI_VALIDATOR_API_KEY"
 
 VALIDATION_QUEUE_SIZE = 64
+VALIDATOR_WORKER_COUNT = len(
+    VALIDATOR_MODELS
+)
 
 VALIDATOR_HTTP_TIMEOUT = 120
 
@@ -129,6 +143,45 @@ VALIDATOR_REPAIR_MIN_CONFIDENCE = 95
 
 GENERATION_PARSE_RETRY_LIMIT = 4
 VALIDATOR_RETRY_LIMIT = 5
+
+# ============================================================================
+# SMART VALIDATOR SCHEDULER
+# ============================================================================
+
+# Pause generation when the total validator backlog reaches this fraction
+# of the total queue capacity.
+VALIDATOR_QUEUE_HIGH_WATERMARK = 0.80
+
+# Resume generation only after the backlog falls to this fraction.
+VALIDATOR_QUEUE_RESUME_WATERMARK = 0.50
+
+# When validators are near their daily quota, begin slowing generation once
+# the backlog reaches this fraction of total capacity.
+VALIDATOR_QUEUE_SOFT_WATERMARK = 0.35
+
+# A validator is considered "expiring" when its daily quota usage reaches this.
+VALIDATOR_QUOTA_PRESSURE_RATIO = 0.90
+
+# Polling/smoothing delays for the scheduler.
+VALIDATOR_PRESSURE_POLL_SECONDS = 0.50
+VALIDATOR_PRESSURE_SLOWDOWN_SECONDS = 2.0
+
+# ============================================================================
+# PROVIDER-AUTHORITATIVE QUOTA MODE
+# ============================================================================
+
+# Gemini does not expose a supported API endpoint that returns the active
+# AI Studio RPM/TPM/RPD limits before a request. Therefore provider responses
+# are authoritative; local MODEL_HIERARCHY values are only fallback hints.
+PROVIDER_AUTHORITATIVE_LIMITS = True
+
+# Gemini RPD resets at midnight Pacific time.
+GEMINI_RESET_ZONE = "America/Los_Angeles"
+
+# Never deliberately hammer a provider while discovering a live limit.
+# A provider 429 is handled by retry/backoff instead.
+PROVIDER_MIN_BACKOFF_SECONDS = 2.0
+PROVIDER_MAX_BACKOFF_SECONDS = 300.0
 
 SUPPORTED_GRADES = (
     "elementary",
@@ -964,8 +1017,8 @@ class ModelSpec:
     provider: str
     model: str
     rank: int
-    rpm: int
-    rpd: int
+    rpm: Optional[int]
+    rpd: Optional[int]
     tpm: Optional[int]
     tpd: Optional[int]
     batch_size_production: int
@@ -1038,10 +1091,10 @@ MODEL_HIERARCHY: List[ModelSpec] = [
 
     ModelSpec(
         "gemini",
-        "gemini-3.7-flash",
+        "gemini-3.1-flash-lite",
         5,
-        5,
-        20,
+        15,
+        500,
         250_000,
         None,
         DEFAULT_PRODUCTION_BATCH_GEMINI,
@@ -1391,44 +1444,119 @@ def looks_daily_exhausted(
     headers: Dict[str, str],
     spec: ModelSpec,
 ) -> bool:
-
     lowered = (
         message or ""
     ).lower()
 
-    remaining_requests = headers.get(
-        "x-ratelimit-remaining-requests"
-    )
-
-    if remaining_requests is not None:
-
-        try:
-
-            if float(
-                remaining_requests
-            ) <= 0:
-                return True
-
-        except (
-            ValueError,
-            TypeError,
-        ):
-            pass
-
-    markers = (
+    # --------------------------------------------------------------
+    # Explicit Gemini machine-readable daily quota errors.
+    # --------------------------------------------------------------
+    daily_markers = (
+        "quota_exceeded",
         "requests per day",
-        "rate limit reached for requests per day",
-        "rpd",
+        "requests per day per project per model",
         "daily quota",
-        "quota exceeded",
         "quota exhausted",
+        "quota exceeded",
         "daily limit",
+        "generaterequestsperdayperprojectpermodelfreetier",
     )
 
-    return any(
+    if any(
         marker in lowered
-        for marker in markers
-    )
+        for marker in daily_markers
+    ):
+        return True
+
+    # --------------------------------------------------------------
+    # Inspect Gemini's structured QuotaFailure details.
+    # Example:
+    #
+    # quotaMetric:
+    #   generate_content_free_tier_requests
+    #
+    # quotaId:
+    #   GenerateRequestsPerDayPerProjectPerModel-FreeTier
+    # --------------------------------------------------------------
+    try:
+        payload = json.loads(
+            message
+        )
+
+        error = (
+            payload.get(
+                "error"
+            )
+            if isinstance(
+                payload,
+                dict,
+            )
+            else None
+        )
+
+        if isinstance(
+            error,
+            dict,
+        ):
+            error_status = str(
+                error.get(
+                    "status"
+                )
+                or ""
+            ).lower()
+
+            error_code = str(
+                error.get(
+                    "code"
+                )
+                or ""
+            )
+
+            if (
+                "quota_exceeded"
+                in error_status
+                or error_code == "429"
+            ):
+                details = (
+                    error.get(
+                        "details"
+                    )
+                    or []
+                )
+
+                for detail in details:
+                    if not isinstance(
+                        detail,
+                        dict,
+                    ):
+                        continue
+
+                    quota_id = str(
+                        detail.get(
+                            "quotaId"
+                        )
+                        or ""
+                    ).lower()
+
+                    quota_metric = str(
+                        detail.get(
+                            "quotaMetric"
+                        )
+                        or ""
+                    ).lower()
+
+                    if (
+                        "day"
+                        in quota_id
+                        or "day"
+                        in quota_metric
+                    ):
+                        return True
+
+    except Exception:
+        pass
+
+    return False
 
 
 def clean_json_text(
@@ -1898,8 +2026,20 @@ class GenerationState:
     def reset_daily_if_needed(
         self,
     ) -> None:
+        """
+        Reset persisted daily usage whenever the provider's current quota
+        day has changed.
 
+        Gemini daily quotas reset at midnight Pacific time, so all Gemini
+        generation + validation state uses the Gemini reset boundary.
+        """
         for spec in MODEL_HIERARCHY:
+
+            reset_zone = (
+                GEMINI_RESET_ZONE
+                if spec.provider == "gemini"
+                else spec.reset_zone
+            )
 
             bucket = (
                 self.model_bucket(
@@ -1908,15 +2048,49 @@ class GenerationState:
             )
 
             today = provider_day_label(
-                spec.reset_zone
+                reset_zone
             )
 
-            previous = bucket.get(
-                "day"
+            previous = (
+                bucket.get(
+                    "day"
+                )
             )
 
             if previous != today:
+                bucket.update(
+                    {
+                        "day": today,
+                        "status": "ACTIVE",
+                        "daily_requests": 0,
+                        "daily_tokens": 0,
+                        "exhausted_reason": None,
+                    }
+                )
 
+        validators = (
+            self.data.setdefault(
+                "validator_models",
+                {},
+            )
+        )
+
+        for validator_model in VALIDATOR_MODELS:
+            bucket = (
+                validators.setdefault(
+                    validator_model,
+                    {},
+                )
+            )
+
+            today = provider_day_label(
+                GEMINI_RESET_ZONE
+            )
+
+            if (
+                bucket.get("day")
+                != today
+            ):
                 bucket.update(
                     {
                         "day": today,
@@ -2116,45 +2290,54 @@ def build_db_engine() -> Engine:
     return engine
 
 
-def load_existing_fingerprints(
+def load_existing_fingerprints_for_batch(
     engine: Engine,
-    limit: int = 250_000,
+    fingerprints: Iterable[str],
 ) -> set[str]:
 
-    fingerprints: set[
-        str
-    ] = set()
+    values = [
+        str(
+            fingerprint
+        ).strip()
+        for fingerprint
+        in fingerprints
+        if str(
+            fingerprint
+        ).strip()
+    ]
+
+    if not values:
+        return set()
+
+    statement = text(
+        """
+        SELECT question_fingerprint
+        FROM practice_questions
+        WHERE question_fingerprint IN :fingerprints
+        """
+    ).bindparams(
+        bindparam(
+            "fingerprints",
+            expanding=True,
+        )
+    )
 
     with engine.connect() as conn:
 
         rows = conn.execute(
-            text(
-                """
-                SELECT question_fingerprint
-                FROM practice_questions
-                WHERE question_fingerprint IS NOT NULL
-                ORDER BY id DESC
-                LIMIT :limit
-                """
-            ),
+            statement,
             {
-                "limit": limit
+                "fingerprints": values
             },
         )
 
-        for row in rows:
-
-            value = str(
-                row[0] or ""
+        return {
+            str(
+                row[0]
             ).strip()
-
-            if value:
-                fingerprints.add(
-                    value
-                )
-
-    return fingerprints
-
+            for row in rows
+            if row[0]
+        }
 
 def load_combination_counts(
     engine: Engine,
@@ -2210,6 +2393,102 @@ def load_combination_counts(
 
     return counts
 
+def load_database_inventory(
+    engine: Engine,
+    syllabus: Dict[
+        str,
+        Dict[
+            str,
+            Dict[
+                str,
+                List[str],
+            ],
+        ],
+    ],
+) -> Dict[str, Any]:
+
+    db_counts = (
+        load_combination_counts(
+            engine
+        )
+    )
+
+    combinations = []
+
+    for target in build_all_combinations(
+        syllabus
+    ):
+
+        key = (
+            target["grade"],
+            target["subject"],
+            target["syllabus_topic"],
+            target["difficulty"],
+        )
+
+        combinations.append(
+            {
+                "grade":
+                    target["grade"],
+
+                "subject":
+                    target["subject"],
+
+                "syllabus_topic":
+                    target[
+                        "syllabus_topic"
+                    ],
+
+                "difficulty":
+                    target[
+                        "difficulty"
+                    ],
+
+                "question_count":
+                    int(
+                        db_counts.get(
+                            key,
+                            0,
+                        )
+                    ),
+            }
+        )
+
+    database_total = (
+        load_database_totals(
+            engine
+        )
+    )
+
+    represented_total = sum(
+        int(
+            row[
+                "question_count"
+            ]
+        )
+        for row in combinations
+    )
+
+    return {
+        "refreshed_at":
+            now_iso(),
+
+        "total_questions":
+            database_total,
+
+        "represented_total":
+            represented_total,
+
+        "unclassified_questions":
+            max(
+                0,
+                database_total
+                - represented_total,
+            ),
+
+        "combinations":
+            combinations,
+    }
 
 # ============================================================================
 # NEW:
@@ -3916,6 +4195,7 @@ class ValidationItem:
 @dataclass
 class ValidationBatch:
     batch_id: str
+    validator_model: str
     items: List[
         ValidationItem
     ]
@@ -3924,6 +4204,7 @@ class ValidationBatch:
 @dataclass
 class ValidationResult:
     batch_id: str
+    validator_model: str
     items: List[
         ValidationItem
     ]
@@ -3931,6 +4212,7 @@ class ValidationResult:
         Dict[str, Any]
     ]
     rejected: int
+    repaired_count: int = 0
     error: Optional[str] = None
 
 
@@ -4399,6 +4681,8 @@ def save_pending_validation(
     payload = {
         "batch_id": batch.batch_id,
 
+        "validator_model": batch.validator_model,
+
         "items": [
             {
                 "source_model": item.source_model,
@@ -4458,31 +4742,27 @@ def call_validator(
     items: List[
         ValidationItem
     ],
-) -> List[
-    Dict[str, Any]
+    validator_model: str,
+    spec: ModelSpec,
+) -> Tuple[
+    List[
+        Dict[str, Any]
+    ],
+    int,
 ]:
 
-    api_key = (
-        str(
-            os.environ.get(
-                VALIDATOR_API_KEY_ENV
-            )
-            or ""
-        ).strip()
-        or str(
-            os.environ.get(
-                "GEMINI_API_KEY"
-            )
-            or ""
-        ).strip()
-    )
+    api_key = str(
+        os.environ.get(
+            VALIDATOR_API_KEY_ENV
+        )
+        or ""
+    ).strip()
 
     if not api_key:
 
         raise ProviderError(
             "Validator API key missing. "
-            "Set GEMINI_VALIDATOR_API_KEY "
-            "or GEMINI_API_KEY.",
+            "Set GEMINI_VALIDATOR_API_KEY.",
             temporary=False,
         )
 
@@ -4505,16 +4785,13 @@ def call_validator(
             "responseJsonSchema": (
                 build_validator_schema()
             ),
-            "thinkingConfig": {
-                "thinkingLevel": "minimal",
-            },
             "maxOutputTokens": 8_000,
         },
     }
 
     url = (
         "https://generativelanguage.googleapis.com/"
-        f"v1beta/models/{VALIDATOR_MODEL}:generateContent"
+        f"v1beta/models/{validator_model}:generateContent"
         f"?key={api_key}"
     )
 
@@ -4542,13 +4819,19 @@ def call_validator(
     )
 
     if response.status_code == 429:
-
         raise ProviderError(
             (
                 "Validator rate limit reached: "
                 f"{body}"
             ),
             temporary=True,
+            daily_exhausted=(
+                looks_daily_exhausted(
+                    body,
+                    headers,
+                    spec,
+                )
+            ),
             retry_after=(
                 parse_retry_after(
                     headers
@@ -4601,6 +4884,21 @@ def call_validator(
     try:
 
         data = response.json()
+
+        usage_metadata = (
+            data.get(
+                "usageMetadata"
+            )
+            or {}
+        )
+
+        total_tokens = int(
+            usage_metadata.get(
+                "totalTokenCount",
+                0,
+            )
+            or 0
+        )
 
         candidates = data.get(
             "candidates",
@@ -4689,7 +4987,10 @@ def call_validator(
             temporary=True,
         )
 
-    return reviews
+    return (
+        reviews,
+        total_tokens,
+    )
 
 
 def call_validator_repair(
@@ -4701,24 +5002,21 @@ def call_validator_repair(
             str,
         ]
     ],
-) -> List[
-    Dict[str, Any]
+    validator_model: str,
+    spec: ModelSpec,
+) -> Tuple[
+    List[
+        Dict[str, Any]
+    ],
+    int,
 ]:
 
-    api_key = (
-        str(
-            os.environ.get(
-                VALIDATOR_API_KEY_ENV
-            )
-            or ""
-        ).strip()
-        or str(
-            os.environ.get(
-                "GEMINI_API_KEY"
-            )
-            or ""
-        ).strip()
-    )
+    api_key = str(
+        os.environ.get(
+            VALIDATOR_API_KEY_ENV
+        )
+        or ""
+    ).strip()
 
     if not api_key:
 
@@ -4748,17 +5046,13 @@ def call_validator_repair(
                 build_validator_repair_schema()
             ),
 
-            "thinkingConfig": {
-                "thinkingLevel": "minimal",
-            },
-
             "maxOutputTokens": 10_000,
         },
     }
 
     url = (
         "https://generativelanguage.googleapis.com/"
-        f"v1beta/models/{VALIDATOR_MODEL}:generateContent"
+        f"v1beta/models/{validator_model}:generateContent"
         f"?key={api_key}"
     )
 
@@ -4786,13 +5080,19 @@ def call_validator_repair(
     )
 
     if response.status_code == 429:
-
         raise ProviderError(
             (
                 "Validator repair rate limit reached: "
                 f"{body}"
             ),
             temporary=True,
+            daily_exhausted=(
+                looks_daily_exhausted(
+                    body,
+                    headers,
+                    spec,
+                )
+            ),
             retry_after=(
                 parse_retry_after(
                     headers
@@ -4845,6 +5145,21 @@ def call_validator_repair(
     try:
 
         data = response.json()
+
+        usage_metadata = (
+            data.get(
+                "usageMetadata"
+            )
+            or {}
+        )
+
+        total_tokens = int(
+            usage_metadata.get(
+                "totalTokenCount",
+                0,
+            )
+            or 0
+        )
 
         candidates = data.get(
             "candidates",
@@ -4932,7 +5247,10 @@ def call_validator_repair(
             temporary=True,
         )
 
-    return repairs
+    return (
+        repairs,
+        total_tokens,
+    )
 
 
 # ============================================================================
@@ -4941,6 +5259,7 @@ def call_validator_repair(
 
 def validator_worker(
     generator: "QuestionGenerator",
+    validator_model: str,
 ) -> None:
 
     while True:
@@ -4952,77 +5271,99 @@ def validator_worker(
         # it does not wait for a full batch to be generated.
         # --------------------------------------------------------------
 
-        try:
+        validator_queue = (
+            generator.validator_queues[
+                validator_model
+            ]
+        )
 
+        try:
             first_item = (
-                generator.validation_queue.get(
+                validator_queue.get(
                     timeout=0.5
                 )
             )
+            
+            if not generator._validator_is_active(
+                validator_model
+            ):
+                generator._reroute_validator_queue(
+                    validator_model,
+                    first_item,
+                )
+                return
 
         except queue.Empty:
-
-            if generator.generation_finished:
-
-                # No generation left and queue empty.
+        
+            if (
+                generator.generation_finished
+                and validator_queue.empty()
+            ):
                 return
 
             continue
+        
+        
+        # --------------------------------------------------------------
+        # SMART BATCH GATHERING
+        # --------------------------------------------------------------
+        #
+        # Give the producer a tiny amount of time to enqueue additional
+        # questions before deciding the batch size.
+        # --------------------------------------------------------------
 
-        if first_item is None:
+        if (
+            VALIDATOR_BATCH_GATHER_DELAY > 0
+        ):
+            time.sleep(
+                VALIDATOR_BATCH_GATHER_DELAY
+            )
 
-            generator.validation_queue.task_done()
 
-            return
+        # We already consumed the first question.
+        #
+        # If 4 more are waiting:
+        #     available_now = 4
+        #     desired_batch_size = 5
+        #
+        # If 14 more are waiting and production max = 10:
+        #     desired_batch_size = 10
+        desired_batch_size = (
+            generator.get_validator_batch_size(
+                validator_model
+            )
+        )
 
-        batch_items: List[
-            ValidationItem
-        ] = [
+        items = [
             first_item
         ]
 
-        # --------------------------------------------------------------
-        # Take up to the configured maximum number of currently available
-        # questions.
-        #
-        # Do NOT wait for more to appear.
-        # --------------------------------------------------------------
-
-        max_batch = (
-            generator.validator_batch_size
-        )
-
-        while len(batch_items) < max_batch:
+        for _ in range(
+            desired_batch_size - 1
+        ):
 
             try:
-
-                item = (
-                    generator.validation_queue.get_nowait()
+                items.append(
+                    validator_queue.get_nowait()
                 )
 
             except queue.Empty:
-
                 break
-
-            if item is None:
-
-                # Put shutdown marker back so the next worker cycle
-                # can see it after current validation is finished.
-                generator.validation_queue.put(
-                    None
-                )
-
-                break
-
-            batch_items.append(
-                item
+        
+        items = (
+            generator._fit_validator_batch_to_tpm(
+                validator_model,
+                items,
             )
-
+        )
+            
+            
         batch = ValidationBatch(
             batch_id=str(
                 uuid.uuid4()
             ),
-            items=batch_items,
+            validator_model=validator_model,
+            items=items,
         )
 
         try:
@@ -5036,8 +5377,11 @@ def validator_worker(
             print(
                 (
                     f"\n[QA BATCH] "
+                    f"validator={validator_model} | "
                     f"Taking {len(batch.items)} "
                     "questions from queue | "
+                    f"remaining={validator_queue.qsize()} | "
+                    f"max={generator.validator_batch_size} | "
                     f"pending={pending_path.name}"
                 ),
                 flush=True,
@@ -5051,100 +5395,195 @@ def validator_worker(
 
             last_error = ""
 
-            # ----------------------------------------------------------
-            # Validator retries its own failures.
-            # ----------------------------------------------------------
+            validator_runtime = (
+                generator.validator_runtime[
+                    validator_model
+                ]
+            )
 
-            for attempt in range(
-                1,
-                VALIDATOR_RETRY_LIMIT + 1,
+            validator_spec = (
+                validator_runtime.spec
+            )
+
+            # ----------------------------------------------------------
+            # Validator execution loop.
+            #
+            # Temporary provider failures do NOT discard this batch.
+            # The same batch remains pending until:
+            #   1. validation succeeds,
+            #   2. this validator's daily quota is exhausted,
+            #   3. this validator becomes permanently unavailable.
+            # ----------------------------------------------------------
+            retry_attempt = 0
+
+            while (
+                reviews is None
+                and not generator.stop_requested
             ):
-
                 try:
-
-                    reviews = call_validator(
-                        batch.items
+                    estimated_tokens = (
+                        generator._validator_prompt_tokens(
+                            batch.items
+                        )
                     )
+
+                    generator._wait_for_validator_limits(
+                        validator_model,
+                        estimated_tokens,
+                    )
+
+                    generator._record_validator_request(
+                        validator_model
+                    )
+
+                    (
+                        reviews,
+                        actual_tokens,
+                    ) = call_validator(
+                        batch.items,
+                        validator_model,
+                        validator_spec,
+                    )
+
+                    generator._record_validator_tokens(
+                        validator_model,
+                        max(
+                            actual_tokens,
+                            estimated_tokens,
+                        ),
+                    )
+
+                    retry_attempt = 0
 
                     break
 
                 except ProviderError as exc:
-
                     last_error = str(
                         exc
                     )
 
-                    if not exc.temporary:
+                    if exc.daily_exhausted:
+                        generator._mark_validator_exhausted(
+                            validator_model,
+                            "provider daily quota exhausted",
+                        )
+
+                        # Reroute this batch to another validator
+                        # if one still has usable capacity.
+                        delete_pending_validation(
+                            batch.batch_id
+                        )
+
+                        generator._requeue_validator_items(
+                            batch.items,
+                            exclude_model=validator_model,
+                        )
+
+                        reviews = None
 
                         break
+
+                    if not exc.temporary:
+                        generator._mark_validator_unavailable(
+                            validator_model,
+                            last_error,
+                        )
+
+                        delete_pending_validation(
+                            batch.batch_id
+                        )
+
+                        generator._requeue_validator_items(
+                            batch.items,
+                            exclude_model=validator_model,
+                        )
+
+                        reviews = None
+
+                        break
+
+                    retry_attempt += 1
 
                     delay = (
                         exc.retry_after
                         or min(
                             30.0,
-                            2.0 * attempt,
+                            2.0
+                            * retry_attempt,
                         )
                     )
+
+                    if (
+                        retry_attempt
+                        >= VALIDATOR_RETRY_LIMIT
+                    ):
+                        delay = max(
+                            delay,
+                            60.0,
+                        )
+                        retry_attempt = 0
 
                     print(
                         (
                             f"[QA RETRY] "
+                            f"validator={validator_model} "
                             f"batch={batch.batch_id} "
-                            f"attempt={attempt}/"
-                            f"{VALIDATOR_RETRY_LIMIT} "
                             f"retrying in "
                             f"{delay:.1f}s"
                         ),
                         flush=True,
                     )
 
-                    time.sleep(
+                    generator._interruptible_sleep(
                         delay
                     )
 
                 except Exception as exc:
-
                     last_error = str(
                         exc
                     )
 
-                    if (
-                        attempt
-                        < VALIDATOR_RETRY_LIMIT
-                    ):
+                    retry_attempt += 1
 
-                        delay = min(
-                            30.0,
-                            2.0 * attempt,
-                        )
-
-                        time.sleep(
-                            delay
-                        )
-
-            if reviews is None:
-
-                print(
-                    (
-                        f"[QA ERROR] "
-                        f"batch={batch.batch_id}: "
-                        f"{trim_one_line(last_error)}"
-                    ),
-                    flush=True,
-                )
-
-                generator.validation_results.put(
-                    ValidationResult(
-                        batch_id=batch.batch_id,
-                        items=batch.items,
-                        approved=[],
-                        rejected=len(
-                            batch.items
-                        ),
-                        error=last_error,
+                    delay = min(
+                        30.0,
+                        2.0
+                        * retry_attempt,
                     )
-                )
 
+                    if (
+                        retry_attempt
+                        >= VALIDATOR_RETRY_LIMIT
+                    ):
+                        delay = 60.0
+                        retry_attempt = 0
+
+                    print(
+                        (
+                            f"[QA RETRY] "
+                            f"validator={validator_model} "
+                            f"batch={batch.batch_id} "
+                            f"unexpected error; "
+                            f"retrying in {delay:.1f}s"
+                        ),
+                        flush=True,
+                    )
+
+                    generator._interruptible_sleep(
+                        delay
+                    )
+
+            # Stop requested while waiting for this batch.
+            # Keep the pending JSON on disk.
+            if (
+                reviews is None
+                and generator.stop_requested
+            ):
+                continue
+
+            # If the current validator was exhausted/unavailable,
+            # this worker must not discard the batch.
+            if reviews is None:
                 continue
 
             approved_rows: List[
@@ -5152,6 +5591,8 @@ def validator_worker(
             ] = []
 
             rejected = 0
+
+            repaired_count = 0
 
             seen_numbers: set[
                 int
@@ -5311,7 +5752,7 @@ def validator_worker(
                         ),
 
                         "validator_model": (
-                            VALIDATOR_MODEL
+                            validator_model
                         ),
 
                         "validator_score": (
@@ -5396,10 +5837,36 @@ def validator_worker(
 
                     try:
                     
-                        repairs = (
-                            call_validator_repair(
+                        estimated_repair_tokens = (
+                            generator._validator_repair_prompt_tokens(
                                 rejected_for_repair
                             )
+                        )
+
+                        generator._wait_for_validator_limits(
+                            validator_model,
+                            estimated_repair_tokens,
+                        )
+
+                        generator._record_validator_request(
+                            validator_model
+                        )
+
+                        (
+                            repairs,
+                            actual_repair_tokens,
+                        ) = call_validator_repair(
+                            rejected_for_repair,
+                            validator_model,
+                            validator_spec,
+                        )
+
+                        generator._record_validator_tokens(
+                            validator_model,
+                            max(
+                                actual_repair_tokens,
+                                estimated_repair_tokens,
+                            ),
                         )
 
                         break
@@ -5431,7 +5898,7 @@ def validator_worker(
                             flush=True,
                         )
 
-                        time.sleep(
+                        generator._interruptible_sleep(
                             delay
                         )
 
@@ -5444,9 +5911,7 @@ def validator_worker(
                         break
                     
                 if repairs is not None:
-                                
-                    repaired_count = 0
-                
+
                     repaired_numbers: set[
                         int
                     ] = set()
@@ -5692,7 +6157,7 @@ def validator_worker(
                                     },
 
                                     "validator_model": (
-                                        VALIDATOR_MODEL
+                                        validator_model
                                     ),
 
                                     "validator_score": (
@@ -5766,9 +6231,11 @@ def validator_worker(
             generator.validation_results.put(
                 ValidationResult(
                     batch_id=batch.batch_id,
+                    validator_model=validator_model,
                     items=batch.items,
                     approved=approved_rows,
                     rejected=rejected,
+                    repaired_count=repaired_count,
                 )
             )
 
@@ -5787,6 +6254,7 @@ def validator_worker(
             print(
                 (
                     f"[QA ERROR] "
+                    f"validator={validator_model} "
                     f"batch={batch.batch_id}: "
                     f"{trim_one_line(str(exc))}"
                 ),
@@ -5796,22 +6264,23 @@ def validator_worker(
             generator.validation_results.put(
                 ValidationResult(
                     batch_id=batch.batch_id,
+                    validator_model=validator_model,
                     items=batch.items,
                     approved=[],
                     rejected=len(
                         batch.items
                     ),
+                    repaired_count=0,
                     error=str(exc),
                 )
             )
 
         finally:
 
-            # Every question removed from the queue must have a matching
-            # task_done().
+            # Every ValidationItem removed from the queue must have
+            # exactly one matching task_done().
             for _ in batch.items:
-
-                generator.validation_queue.task_done()
+                validator_queue.task_done()
 
 
 # ============================================================================
@@ -5831,11 +6300,6 @@ class QuestionGenerator:
         self.state = state
         self.syllabus = syllabus
 
-        self.fingerprints = (
-            load_existing_fingerprints(
-                engine
-            )
-        )
 
         self.combination_counts = (
             load_combination_counts(
@@ -5860,27 +6324,59 @@ class QuestionGenerator:
             for spec
             in MODEL_HIERARCHY
         }
+        
+        # Separate runtime ledger for validator API usage.
+        # Validator and generation usage must never share counters.
+        validator_specs = {
+            spec.model: spec
+            for spec in MODEL_HIERARCHY
+        }
 
-        self.validation_queue: queue.Queue[
-            Optional[ValidationItem]
-        ] = queue.Queue(
-            maxsize=VALIDATION_QUEUE_SIZE
-        )
+        self.validator_runtime: Dict[
+            str,
+            ModelRuntime,
+        ] = {
+            validator_model: ModelRuntime(
+                validator_specs[validator_model]
+            )
+            for validator_model in VALIDATOR_MODELS
+            if validator_model in validator_specs
+        }
 
+        self.validator_state_lock = threading.Lock()
+
+        self.validator_queues: Dict[
+            str,
+            queue.Queue
+        ] = {
+            model: queue.Queue(
+                maxsize=VALIDATION_QUEUE_SIZE
+            )
+            for model in VALIDATOR_MODELS
+        }
+        
         self.validation_results: queue.Queue[
             ValidationResult
         ] = queue.Queue()
-
-        self.validation_thread = (
-            threading.Thread(
-                target=validator_worker,
-                args=(self,),
-                name="question-validator",
-                daemon=True,
-            )
-        )
-
-        self.validation_thread.start()
+        
+        self.validator_threads: List[
+            threading.Thread
+        ] = []
+        
+        self.validator_stats: Dict[
+            str,
+            Dict[str, Any]
+        ] = {
+            model: {
+                "batches": 0,
+                "validated_questions": 0,
+                "approved": 0,
+                "repaired": 0,
+                "rejected": 0,
+                "errors": 0,
+            }
+            for model in VALIDATOR_MODELS
+        }
 
         VALIDATION_PENDING_DIR.mkdir(
             parents=True,
@@ -5888,14 +6384,21 @@ class QuestionGenerator:
         )
 
         print(
-            "[QA START] Dedicated validator active: "
-            f"{VALIDATOR_MODEL}",
+            "[QA START] Parallel validators active:",
             flush=True,
         )
+
+        for validator_model in VALIDATOR_MODELS:
+            print(
+                f"  - {validator_model}",
+                flush=True,
+            )
 
         self._install_signal_handlers()
 
         self.state.reset_daily_if_needed()
+
+        self._hydrate_validator_runtime_from_state()
 
         self._hydrate_runtime_from_state()
 
@@ -5907,26 +6410,893 @@ class QuestionGenerator:
             self.runtime,
             available_models,
         )
+        
+        for validator_model in VALIDATOR_MODELS:
+            thread = threading.Thread(
+                target=validator_worker,
+                args=(
+                    self,
+                    validator_model,
+                ),
+                name=(
+                    "question-validator-"
+                    + validator_model
+                ),
+                daemon=True,
+            )
+        
+            thread.start()
+        
+            self.validator_threads.append(
+                thread
+            )
+        
+    def _validator_bucket(
+        self,
+        validator_model: str,
+    ) -> Dict[str, Any]:
+        validators = (
+            self.state.data.setdefault(
+                "validator_models",
+                {},
+            )
+        )
 
-        if (
-            available_models.get(
-                "gemini"
-            )
-            and VALIDATOR_MODEL
-            not in available_models.get(
-                "gemini",
-                set(),
-            )
+        runtime = self.validator_runtime[
+            validator_model
+        ]
+
+        return validators.setdefault(
+            validator_model,
+            {
+                "day": provider_day_label(
+                    runtime.spec.reset_zone
+                ),
+                "status": "ACTIVE",
+                "daily_requests": 0,
+                "daily_tokens": 0,
+                "exhausted_reason": None,
+            },
+        )
+
+    def _hydrate_validator_runtime_from_state(
+        self,
+    ) -> None:
+        for validator_model, runtime in (
+            self.validator_runtime.items()
         ):
+            spec = runtime.spec
+            bucket = self._validator_bucket(
+                validator_model
+            )
 
-            raise RuntimeError(
-                (
-                    f"Dedicated validator model "
-                    f"{VALIDATOR_MODEL} "
-                    "is not currently available "
-                    "through the Gemini API."
+            today = provider_day_label(
+                spec.reset_zone
+            )
+
+            if bucket.get("day") != today:
+                bucket.update(
+                    {
+                        "day": today,
+                        "status": "ACTIVE",
+                        "daily_requests": 0,
+                        "daily_tokens": 0,
+                        "exhausted_reason": None,
+                    }
+                )
+
+            runtime.daily_requests = int(
+                bucket.get(
+                    "daily_requests",
+                    0,
                 )
             )
+
+            runtime.daily_tokens = int(
+                bucket.get(
+                    "daily_tokens",
+                    0,
+                )
+            )
+
+            runtime.status = str(
+                bucket.get(
+                    "status"
+                )
+                or "ACTIVE"
+            )
+
+            runtime.exhausted_reason = (
+                bucket.get(
+                    "exhausted_reason"
+                )
+            )
+
+            if (
+                runtime.daily_requests
+                >= spec.rpd
+            ):
+                runtime.status = (
+                    "DAILY_EXHAUSTED"
+                )
+
+            if (
+                spec.tpd
+                and runtime.daily_tokens
+                >= spec.tpd
+            ):
+                runtime.status = (
+                    "DAILY_EXHAUSTED"
+                )
+
+        self.state.save()
+
+    def _validator_is_active(
+        self,
+        validator_model: str,
+    ) -> bool:
+        runtime = self.validator_runtime[
+            validator_model
+        ]
+
+        if runtime.status != "ACTIVE":
+            return False
+
+        spec = runtime.spec
+
+        if (
+            runtime.daily_requests
+            >= spec.rpd
+        ):
+            runtime.status = (
+                "DAILY_EXHAUSTED"
+            )
+            runtime.exhausted_reason = "RPD"
+            self._mark_validator_exhausted(
+                validator_model,
+                "RPD",
+            )
+            return False
+
+        if (
+            spec.tpd
+            and runtime.daily_tokens
+            >= spec.tpd
+        ):
+            runtime.status = (
+                "DAILY_EXHAUSTED"
+            )
+            runtime.exhausted_reason = "TPD"
+            self._mark_validator_exhausted(
+                validator_model,
+                "TPD",
+            )
+            return False
+
+        return True
+
+    def _active_validator_models(
+        self,
+    ) -> List[str]:
+        return [
+            validator_model
+            for validator_model in VALIDATOR_MODELS
+            if self._validator_is_active(
+                validator_model
+            )
+        ]
+
+    def _mark_validator_exhausted(
+        self,
+        validator_model: str,
+        reason: str,
+    ) -> None:
+        runtime = self.validator_runtime[
+            validator_model
+        ]
+
+        runtime.status = (
+            "DAILY_EXHAUSTED"
+        )
+        runtime.exhausted_reason = reason
+
+        with self.validator_state_lock:
+            bucket = self._validator_bucket(
+                validator_model
+            )
+            bucket["status"] = (
+                "DAILY_EXHAUSTED"
+            )
+            bucket["exhausted_reason"] = (
+                reason
+            )
+            bucket["daily_requests"] = (
+                runtime.daily_requests
+            )
+            bucket["daily_tokens"] = (
+                runtime.daily_tokens
+            )
+            self.state.save()
+
+        print(
+            (
+                f"[QA EXHAUSTED] "
+                f"{validator_model}: "
+                f"{reason}; removing validator "
+                "from future scheduling."
+            ),
+            flush=True,
+        )
+
+    def _mark_validator_unavailable(
+        self,
+        validator_model: str,
+        reason: str,
+    ) -> None:
+        runtime = self.validator_runtime[
+            validator_model
+        ]
+
+        runtime.status = "UNAVAILABLE"
+        runtime.exhausted_reason = reason
+
+        with self.validator_state_lock:
+            bucket = self._validator_bucket(
+                validator_model
+            )
+            bucket["status"] = (
+                "UNAVAILABLE"
+            )
+            bucket["exhausted_reason"] = (
+                reason
+            )
+            self.state.save()
+
+    def _validator_prompt_tokens(
+        self,
+        items: List[ValidationItem],
+    ) -> int:
+        prompt = build_validator_prompt(
+            items
+        )
+
+        return max(
+            600,
+            (
+                len(prompt)
+                // 4
+            )
+            + (
+                len(items)
+                * 450
+            ),
+        )
+
+    def _validator_repair_prompt_tokens(
+        self,
+        rejected_items: List[
+            Tuple[
+                int,
+                ValidationItem,
+                int,
+                str,
+            ]
+        ],
+    ) -> int:
+        prompt = (
+            build_validator_repair_prompt(
+                rejected_items
+            )
+        )
+
+        return max(
+            600,
+            (
+                len(prompt)
+                // 4
+            )
+            + (
+                len(rejected_items)
+                * 600
+            ),
+        )
+
+    def _wait_for_validator_limits(
+        self,
+        validator_model: str,
+        estimated_tokens: int,
+    ) -> None:
+        runtime = self.validator_runtime[
+            validator_model
+        ]
+        spec = runtime.spec
+
+        while (
+            not self.stop_requested
+        ):
+            runtime.trim_windows()
+
+            # ----------------------------------------------------------
+            # DAILY REQUEST LIMIT
+            #
+            # In provider-authoritative mode Gemini itself decides when
+            # the daily quota is exhausted.
+            # ----------------------------------------------------------
+            if (
+                not PROVIDER_AUTHORITATIVE_LIMITS
+                and spec.rpd is not None
+                and runtime.daily_requests
+                >= spec.rpd
+            ):
+                self._mark_validator_exhausted(
+                    validator_model,
+                    "RPD",
+                )
+
+                raise ProviderError(
+                    (
+                        f"{validator_model}: "
+                        "daily request quota exhausted."
+                    ),
+                    temporary=False,
+                    daily_exhausted=True,
+                )
+
+            # ----------------------------------------------------------
+            # DAILY TOKEN LIMIT
+            # ----------------------------------------------------------
+            if (
+                not PROVIDER_AUTHORITATIVE_LIMITS
+                and spec.tpd
+                and (
+                    runtime.daily_tokens
+                    + estimated_tokens
+                    > spec.tpd
+                )
+            ):
+                self._mark_validator_exhausted(
+                    validator_model,
+                    "TPD",
+                )
+                raise ProviderError(
+                    (
+                        f"{validator_model}: "
+                        "daily token quota would be exceeded."
+                    ),
+                    temporary=False,
+                    daily_exhausted=True,
+                )
+
+            now = time.time()
+
+            # ----------------------------------------------------------
+            # RPM
+            # ----------------------------------------------------------
+            if (
+                runtime.rpm_used
+                >= spec.rpm
+            ):
+                wait_for = max(
+                    0.5,
+                    60.0
+                    - (
+                        now
+                        - runtime.requests_started[
+                            0
+                        ]
+                    )
+                    + 0.5,
+                )
+
+                print(
+                    (
+                        f"[QA WAIT] "
+                        f"{validator_model}: "
+                        f"RPM full; waiting "
+                        f"{wait_for:.1f}s."
+                    ),
+                    flush=True,
+                )
+
+                self._interruptible_sleep(
+                    wait_for
+                )
+                continue
+
+            # ----------------------------------------------------------
+            # TPM
+            # ----------------------------------------------------------
+            if (
+                spec.tpm is not None
+                and (
+                    runtime.tpm_used
+                    + estimated_tokens
+                    > spec.tpm
+                )
+            ):
+                if runtime.token_events:
+                    wait_for = max(
+                        0.5,
+                        60.0
+                        - (
+                            now
+                            - runtime.token_events[
+                                0
+                            ][0]
+                        )
+                        + 0.5,
+                    )
+
+                    print(
+                        (
+                            f"[QA WAIT] "
+                            f"{validator_model}: "
+                            f"TPM window full; "
+                            f"waiting {wait_for:.1f}s."
+                        ),
+                        flush=True,
+                    )
+
+                    self._interruptible_sleep(
+                        wait_for
+                    )
+                    continue
+
+                raise ProviderError(
+                    (
+                        f"{validator_model}: "
+                        "single validation batch is "
+                        "larger than the configured TPM limit."
+                    ),
+                    temporary=False,
+                )
+
+            return
+
+        raise GenerationStopped()
+
+    def _record_validator_request(
+        self,
+        validator_model: str,
+    ) -> None:
+        runtime = self.validator_runtime[
+            validator_model
+        ]
+
+        timestamp = time.time()
+
+        runtime.requests_started.append(
+            timestamp
+        )
+
+        runtime.daily_requests += 1
+
+        with self.validator_state_lock:
+            bucket = self._validator_bucket(
+                validator_model
+            )
+
+            bucket[
+                "daily_requests"
+            ] = runtime.daily_requests
+
+            bucket[
+                "daily_tokens"
+            ] = runtime.daily_tokens
+
+            self.state.save()
+
+    def _record_validator_tokens(
+        self,
+        validator_model: str,
+        token_count: int,
+    ) -> None:
+        runtime = self.validator_runtime[
+            validator_model
+        ]
+
+        token_count = max(
+            0,
+            int(
+                token_count
+                or 0
+            ),
+        )
+
+        runtime.token_events.append(
+            (
+                time.time(),
+                token_count,
+            )
+        )
+
+        runtime.daily_tokens += (
+            token_count
+        )
+
+        with self.validator_state_lock:
+            bucket = self._validator_bucket(
+                validator_model
+            )
+
+            bucket[
+                "daily_requests"
+            ] = runtime.daily_requests
+
+            bucket[
+                "daily_tokens"
+            ] = runtime.daily_tokens
+
+            self.state.save()
+
+    def _fit_validator_batch_to_tpm(
+        self,
+        validator_model: str,
+        items: List[ValidationItem],
+    ) -> List[ValidationItem]:
+        runtime = self.validator_runtime[
+            validator_model
+        ]
+
+        spec = runtime.spec
+
+        if spec.tpm is None:
+            return items
+
+        fitted = list(items)
+
+        while (
+            len(fitted) > 1
+            and (
+                self._validator_prompt_tokens(
+                    fitted
+                )
+                > spec.tpm
+            )
+        ):
+            item = fitted.pop()
+
+            self.validator_queues[
+                validator_model
+            ].put(
+                item
+            )
+
+        return fitted
+
+    def _requeue_validator_items(
+        self,
+        items: List[ValidationItem],
+        exclude_model: Optional[str] = None,
+    ) -> None:
+        if not items:
+            return
+
+        active_models = [
+            model
+            for model in self._active_validator_models()
+            if model != exclude_model
+        ]
+
+        if not active_models:
+            # No validator has remaining usable capacity.
+            # Leave the work pending rather than assigning it to
+            # an exhausted/unavailable validator.
+            print(
+                (
+                    "[QA HOLD] No validator has remaining "
+                    "capacity; validation work remains pending."
+                ),
+                flush=True,
+            )
+            return
+
+        loads = {
+            model: self.validator_queues[
+                model
+            ].unfinished_tasks
+            for model in active_models
+        }
+
+        for item in items:
+            validator_model = min(
+                active_models,
+                key=lambda model: (
+                    loads[model],
+                    self.validator_runtime[
+                        model
+                    ].rpd_ratio,
+                    self.validator_runtime[
+                        model
+                    ].tpd_ratio,
+                ),
+            )
+
+            self.validator_queues[
+                validator_model
+            ].put(
+                item
+            )
+
+            loads[
+                validator_model
+            ] += 1
+
+    def _reroute_validator_queue(
+        self,
+        validator_model: str,
+        first_item: ValidationItem,
+    ) -> None:
+        validator_queue = (
+            self.validator_queues[
+                validator_model
+            ]
+        )
+
+        items = [
+            first_item
+        ]
+
+        while True:
+            try:
+                items.append(
+                    validator_queue.get_nowait()
+                )
+            except queue.Empty:
+                break
+
+        # Every item removed from this queue is being transferred
+        # elsewhere, so every removed item must be completed here.
+        for _ in range(
+            len(items)
+        ):
+            validator_queue.task_done()
+
+        active_models = [
+            model
+            for model in self._active_validator_models()
+            if model != validator_model
+        ]
+
+        if active_models:
+            self._requeue_validator_items(
+                items,
+                exclude_model=validator_model,
+            )
+            return
+
+        # No validator has capacity left.
+        # Put the first item back and leave the remaining queue untouched.
+        validator_queue.put(
+            first_item
+        )
+
+    def get_validator_batch_size(
+        self,
+        validator_model: str,
+    ) -> int:
+        validator_queue = (
+            self.validator_queues[
+                validator_model
+            ]
+        )
+
+        pending = (
+            validator_queue.unfinished_tasks
+        )
+
+        max_batch = (
+            self.validator_batch_size
+        )
+
+        if pending <= 0:
+            return 1
+
+        return min(
+            max_batch,
+            pending,
+        )
+
+    def wait_for_validator_pressure(
+        self,
+    ) -> bool:
+        total_capacity = (
+            VALIDATION_QUEUE_SIZE
+            * VALIDATOR_WORKER_COUNT
+        )
+
+        high_watermark = int(
+            total_capacity
+            * VALIDATOR_QUEUE_HIGH_WATERMARK
+        )
+
+        resume_watermark = int(
+            total_capacity
+            * VALIDATOR_QUEUE_RESUME_WATERMARK
+        )
+
+        soft_watermark = int(
+            total_capacity
+            * VALIDATOR_QUEUE_SOFT_WATERMARK
+        )
+
+        while not self.stop_requested:
+            self.drain_validation_results()
+
+            pending = (
+                self.total_validator_queue_size()
+            )
+
+            active_models = (
+                self._active_validator_models()
+            )
+
+            if (
+                pending > 0
+                and not active_models
+            ):
+                print(
+                    (
+                        "\n[QA STOP] "
+                        "All validator models have "
+                        "exhausted/unavailable capacity. "
+                        f"{pending} validation tasks remain pending."
+                    ),
+                    flush=True,
+                )
+                return False
+
+            # ----------------------------------------------------------
+            # HARD BACKPRESSURE
+            # ----------------------------------------------------------
+            if pending >= high_watermark:
+                print(
+                    (
+                        f"[QA BACKPRESSURE] "
+                        f"queue={pending}/"
+                        f"{total_capacity}; "
+                        "pausing generation until queue "
+                        f"falls to {resume_watermark}."
+                    ),
+                    flush=True,
+                )
+
+                while (
+                    not self.stop_requested
+                ):
+                    self.drain_validation_results()
+
+                    pending = (
+                        self.total_validator_queue_size()
+                    )
+
+                    active_models = (
+                        self._active_validator_models()
+                    )
+
+                    if (
+                        pending
+                        <= resume_watermark
+                    ):
+                        break
+
+                    if not active_models:
+                        return False
+
+                    self._interruptible_sleep(
+                        VALIDATOR_PRESSURE_POLL_SECONDS
+                    )
+
+                if self.stop_requested:
+                    return False
+
+                continue
+
+            # ----------------------------------------------------------
+            # DAILY QUOTA PRESSURE
+            # ----------------------------------------------------------
+            expiring_models = []
+
+            for validator_model in active_models:
+                runtime = self.validator_runtime[
+                    validator_model
+                ]
+
+                ratio = max(
+                    runtime.rpd_ratio,
+                    runtime.tpd_ratio,
+                )
+
+                if (
+                    ratio
+                    >= VALIDATOR_QUOTA_PRESSURE_RATIO
+                ):
+                    expiring_models.append(
+                        validator_model
+                    )
+
+            healthy_models = [
+                model
+                for model in active_models
+                if model
+                not in expiring_models
+            ]
+
+            if (
+                pending >= soft_watermark
+                and expiring_models
+                and not healthy_models
+            ):
+                print(
+                    (
+                        "[QA PRESSURE] Validator daily "
+                        "capacity is near exhaustion; "
+                        "slowing generation while backlog drains."
+                    ),
+                    flush=True,
+                )
+
+                self._interruptible_sleep(
+                    VALIDATOR_PRESSURE_SLOWDOWN_SECONDS
+                )
+                continue
+
+            if (
+                pending > 0
+                and expiring_models
+            ):
+                self._interruptible_sleep(
+                    VALIDATOR_PRESSURE_SLOWDOWN_SECONDS
+                )
+
+            return (
+                not self.stop_requested
+            )
+
+        return False
+
+    def wait_for_validators(
+        self,
+    ) -> None:
+        while True:
+            self.drain_validation_results()
+
+            all_done = all(
+                validator_queue.unfinished_tasks
+                == 0
+                for validator_queue
+                in self.validator_queues.values()
+            )
+
+            if all_done:
+                break
+
+            if (
+                not self._active_validator_models()
+            ):
+                pending = (
+                    self.total_validator_queue_size()
+                )
+
+                if pending > 0:
+                    print(
+                        (
+                            "\n[QA BLOCKED] "
+                            f"{pending} validation tasks "
+                            "could not be executed because "
+                            "all validator capacity is exhausted "
+                            "or unavailable. Pending batches remain "
+                            "on disk."
+                        ),
+                        flush=True,
+                    )
+                break
+
+            self._interruptible_sleep(
+                VALIDATOR_PRESSURE_POLL_SECONDS
+            )
+
+        self.drain_validation_results()
 
     def _interruptible_sleep(
         self,
@@ -6114,7 +7484,20 @@ class QuestionGenerator:
         )
 
         print(
-            f"Validator: {VALIDATOR_MODEL}"
+            "Validators: "
+            + ", ".join(
+                VALIDATOR_MODELS
+            )
+        )
+
+        print(
+            f"Validator workers: "
+            f"{VALIDATOR_WORKER_COUNT}"
+        )
+
+        print(
+            f"Validator batch distribution: "
+            f"balanced across workers"
         )
 
         print(
@@ -6132,16 +7515,25 @@ class QuestionGenerator:
                 f"{spec.rank:02d}. "
                 f"{spec.provider:6s} | "
                 f"{spec.model:34s} | "
-                f"RPM={spec.rpm:<3} "
-                f"RPD={spec.rpd:<5} "
-                f"TPM={spec.tpm or '-':<7} "
-                f"TPD={spec.tpd or '-':<7} | "
+                f"RPM={spec.rpm or 'provider'} "
+                f"RPD={spec.rpd or 'provider'} "
+                f"TPM={spec.tpm or 'provider'} "
+                f"TPD={spec.tpd or 'provider'} | "
                 f"{spec.quality_tier}"
             )
 
         print(
             "=" * 84
         )
+
+        if PROVIDER_AUTHORITATIVE_LIMITS:
+            print(
+                (
+                    "Quota mode: PROVIDER-AUTHORITATIVE. "
+                    "Gemini API responses determine actual exhaustion; "
+                    "local model limits are advisory/fallback values."
+                )
+            )
 
         if not RATE_LIMIT_OVERRIDE_FILE.exists():
 
@@ -6294,14 +7686,33 @@ class QuestionGenerator:
         self,
         runtime: ModelRuntime,
     ) -> bool:
+        """
+        In provider-authoritative mode, local counters are informational only.
+
+        A Gemini generation model is considered daily-exhausted only after
+        Gemini itself reports that the daily quota has been exceeded.
+
+        Local counters are still used for reporting/telemetry.
+        """
+        if (
+            runtime.status
+            in (
+                "DAILY_EXHAUSTED",
+                "UNAVAILABLE",
+            )
+        ):
+            return False
+
+        if PROVIDER_AUTHORITATIVE_LIMITS:
+            return True
 
         spec = runtime.spec
 
         if (
-            runtime.daily_requests
+            spec.rpd is not None
+            and runtime.daily_requests
             >= spec.rpd
         ):
-
             runtime.status = (
                 "DAILY_EXHAUSTED"
             )
@@ -6322,7 +7733,6 @@ class QuestionGenerator:
             and runtime.daily_tokens
             >= spec.tpd
         ):
-
             runtime.status = (
                 "DAILY_EXHAUSTED"
             )
@@ -6524,6 +7934,20 @@ class QuestionGenerator:
         questions = parse_questions(
             raw
         )
+        
+        runtime.question_count += len(
+            questions
+        )
+
+        model_bucket = (
+            self.state.model_bucket(
+                spec
+            )
+        )
+
+        model_bucket[
+            "question_count"
+        ] = runtime.question_count
 
         print(
             f"[OK] {spec.model} generated "
@@ -6684,10 +8108,7 @@ class QuestionGenerator:
                 "question_fingerprint"
             ]
 
-            if (
-                fp in self.fingerprints
-                or fp in seen_batch
-            ):
+            if fp in seen_batch:
 
                 runtime.duplicate_count += 1
 
@@ -6748,6 +8169,48 @@ class QuestionGenerator:
                 row
             )
 
+        existing_fingerprints = (
+            load_existing_fingerprints_for_batch(
+                self.engine,
+                [
+                    row[
+                        "question_fingerprint"
+                    ]
+                    for row in accepted
+                ],
+            )
+        )
+
+        if existing_fingerprints:
+        
+            filtered: List[
+                Dict[str, Any]
+            ] = []
+
+            for row in accepted:
+            
+                fp = row[
+                    "question_fingerprint"
+                ]
+
+                if fp in existing_fingerprints:
+                
+                    runtime.duplicate_count += 1
+
+                    self.state.data[
+                        "totals"
+                    ][
+                        "duplicates"
+                    ] += 1
+
+                    continue
+                
+                filtered.append(
+                    row
+                )
+
+            accepted = filtered
+        
         return accepted
 
     def queue_for_validation(
@@ -6762,26 +8225,154 @@ class QuestionGenerator:
         if not rows:
             return
 
-        for row in rows:
+        assignments: Dict[
+            str,
+            List[
+                ValidationItem
+            ]
+        ] = {
+            model: []
+            for model in VALIDATOR_MODELS
+        }
 
-            item = ValidationItem(
-                source_model=source_model,
-                target=target,
-                row=row,
+        # --------------------------------------------------------------
+        # Capacity-aware validator distribution.
+        #
+        # Never intentionally assign new work to a validator that has
+        # already exhausted its daily quota.
+        # --------------------------------------------------------------
+        active_models = (
+            self._active_validator_models()
+        )
+
+        if active_models:
+            assignment_models = (
+                active_models
+            )
+        else:
+            print(
+                (
+                    "[QA HOLD] "
+                    "No validator currently has confirmed usable "
+                    "capacity; validation work remains unassigned."
+                ),
+                flush=True,
+            )
+            return
+
+            print(
+                (
+                    "[QA HOLD] "
+                    "No validator currently has usable daily "
+                    "capacity; keeping new validation work pending."
+                ),
+                flush=True,
             )
 
-            self.validation_queue.put(
-                item
+        loads = {
+            model: self.validator_queues[
+                model
+            ].unfinished_tasks
+            for model in assignment_models
+        }
+
+        assignment_cursor = 0
+
+        for row in rows:
+            min_load = min(
+                loads.values()
+            )
+
+            tied_models = [
+                model
+                for model in assignment_models
+                if loads[model] == min_load
+            ]
+
+            validator_model = tied_models[
+                assignment_cursor
+                % len(tied_models)
+            ]
+
+            assignment_cursor += 1
+
+            assignments[
+                validator_model
+            ].append(
+                ValidationItem(
+                    source_model=source_model,
+                    target=target,
+                    row=row,
+                )
+            )
+
+            loads[
+                validator_model
+            ] += 1
+
+        total_queued = 0
+
+        # --------------------------------------------------------------
+        # IMPORTANT:
+        #
+        # Put individual ValidationItem objects into the queues.
+        #
+        # The validator worker decides the actual batch size dynamically
+        # when it starts processing.
+        # --------------------------------------------------------------
+        for (
+            validator_model,
+            items
+        ) in assignments.items():
+
+            if not items:
+                continue
+
+            validator_queue = (
+                self.validator_queues[
+                    validator_model
+                ]
+            )
+
+            for item in items:
+                validator_queue.put(
+                    item
+                )
+
+            total_queued += len(
+                items
+            )
+
+            print(
+                (
+                    f"[QA QUEUE] "
+                    f"{validator_model}: "
+                    f"+{len(items)} questions | "
+                    f"queue="
+                    f"{validator_queue.qsize()}"
+                ),
+                flush=True,
             )
 
         print(
             (
-                f"[QA QUEUE] "
-                f"+{len(rows)} questions "
-                f"from {source_model} | "
-                f"queue={self.validation_queue.qsize()}"
+                f"[QA QUEUED] "
+                f"total={total_queued} "
+                f"from={source_model} | "
+                f"total_pending="
+                f"{self.total_validator_queue_size()}"
             ),
             flush=True,
+        )
+
+    def total_validator_queue_size(
+        self,
+    ) -> int:
+
+        return sum(
+            validator_queue.unfinished_tasks
+            for validator_queue
+            in self.validator_queues.values()
         )
 
     def drain_validation_results(
@@ -6791,14 +8382,70 @@ class QuestionGenerator:
         while True:
 
             try:
-
                 result = (
                     self.validation_results.get_nowait()
                 )
-
+                
             except queue.Empty:
 
                 break
+                
+            validator_model = (
+                result.validator_model
+            )
+
+            validator_stats = (
+                self.state.data
+                .setdefault(
+                    "validators",
+                    {}
+                )
+                .setdefault(
+                    validator_model,
+                    {
+                        "batches": 0,
+                        "validated_questions": 0,
+                        "approved": 0,
+                        "repaired": 0,
+                        "rejected": 0,
+                        "errors": 0,
+                    },
+                )
+            )
+            
+            validator_stats[
+                "batches"
+            ] += 1
+            
+            validator_stats[
+                "validated_questions"
+            ] += len(
+                result.items
+            )
+            
+            validator_stats[
+                "approved"
+            ] += len(
+                result.approved
+            )
+            
+            validator_stats[
+                "repaired"
+            ] += int(
+                result.repaired_count
+            )
+            
+            validator_stats[
+                "rejected"
+            ] += int(
+                result.rejected
+            )
+            
+            if result.error:
+                validator_stats[
+                    "errors"
+                ] += 1
+
 
             try:
 
@@ -6825,13 +8472,6 @@ class QuestionGenerator:
 
                 for row in result.approved:
 
-                    fp = row[
-                        "question_fingerprint"
-                    ]
-
-                    self.fingerprints.add(
-                        fp
-                    )
 
                     key = (
                         row["grade"],
@@ -6953,8 +8593,8 @@ class QuestionGenerator:
         print(
             (
                 "Generation remains strictly sequential. "
-                f"Validator independently consumes up to "
-                f"{VALIDATOR_BATCH_DEMO} questions per pass."
+                f"Questions are distributed across "
+                f"{VALIDATOR_WORKER_COUNT} parallel validators."
             ),
             flush=True,
         )
@@ -7048,7 +8688,7 @@ class QuestionGenerator:
                         f"raw={len(raw_questions)} "
                         f"prepared={len(prepared)} "
                         f"queue="
-                        f"{self.validation_queue.qsize()}"
+                        f"{self.total_validator_queue_size()}"
                     ),
                     flush=True,
                 )
@@ -7166,7 +8806,7 @@ class QuestionGenerator:
             flush=True,
         )
 
-        self.validation_queue.join()
+        self.wait_for_validators()
 
         self.drain_validation_results()
 
@@ -7220,9 +8860,8 @@ class QuestionGenerator:
 
         print(
             (
-                "Validator independently consumes "
-                f"up to {VALIDATOR_BATCH_PRODUCTION} "
-                "questions per validation pass."
+                "Questions are distributed across "
+                f"{VALIDATOR_WORKER_COUNT} parallel validators."
             ),
             flush=True,
         )
@@ -7243,6 +8882,16 @@ class QuestionGenerator:
             # ----------------------------------------------------------
 
             while not self.stop_requested:
+
+                # ------------------------------------------------------
+                # SMART VALIDATOR BACKPRESSURE
+                #
+                # Generation remains sequential, but it may pause so
+                # validators can catch up or so expiring validator
+                # quotas are not wasted while backlog is high.
+                # ------------------------------------------------------
+                if not self.wait_for_validator_pressure():
+                    break
 
                 active_runtime: Optional[
                     ModelRuntime
@@ -7362,8 +9011,8 @@ class QuestionGenerator:
                             f"prepared="
                             f"{len(prepared)} "
                             f"queue="
-                            f"{self.validation_queue.qsize()}/"
-                            f"{VALIDATION_QUEUE_SIZE}"
+                            f"{self.total_validator_queue_size()}/"
+                            f"{VALIDATOR_WORKER_COUNT}"
                         ),
                         flush=True,
                     )
@@ -7593,7 +9242,7 @@ class QuestionGenerator:
                 flush=True,
             )
 
-            self.validation_queue.join()
+            self.wait_for_validators()
 
             self.drain_validation_results()
 
@@ -7622,19 +9271,22 @@ class QuestionGenerator:
         self,
     ) -> None:
 
-        if (
-            self.validation_thread.is_alive()
-        ):
+        #
+        # Generation and validation queues have already been
+        # drained before shutdown.
+        #
+        # Each validator exits naturally when:
+        #   generation_finished == True
+        #   and its own queue is empty.
+        #
 
-            # Sentinel means:
-            # generation is done AND the current queue is empty.
-            self.validation_queue.put(
-                None
-            )
+        for thread in self.validator_threads:
 
-            self.validation_thread.join(
-                timeout=30
-            )
+            if thread.is_alive():
+
+                thread.join(
+                    timeout=30
+                )
 
     # =========================================================================
     # FINAL SUMMARY
@@ -7645,13 +9297,6 @@ class QuestionGenerator:
         mode: str,
     ) -> None:
 
-        # --------------------------------------------------------------
-        # IMPORTANT:
-        # Do NOT trust only the runtime's insertion counters.
-        #
-        # Query the actual database at the end.
-        # --------------------------------------------------------------
-
         try:
 
             inserted_counts = (
@@ -7660,9 +9305,10 @@ class QuestionGenerator:
                 )
             )
 
-            database_total = (
-                load_database_totals(
-                    self.engine
+            inventory = (
+                load_database_inventory(
+                    self.engine,
+                    self.syllabus,
                 )
             )
 
@@ -7671,14 +9317,74 @@ class QuestionGenerator:
             print(
                 (
                     "[SUMMARY WARN] Could not "
-                    "query final database counts: "
+                    "query final database state: "
                     f"{exc}"
                 ),
                 flush=True,
             )
 
-            inserted_counts = {}
-            database_total = -1
+            return
+
+        database_total = int(
+            inventory[
+                "total_questions"
+            ]
+        )
+
+        represented_total = int(
+            inventory[
+                "represented_total"
+            ]
+        )
+
+        unclassified = int(
+            inventory[
+                "unclassified_questions"
+            ]
+        )
+
+        # --------------------------------------------------------------
+        # Persist an authoritative DB snapshot.
+        # --------------------------------------------------------------
+
+        self.state.data[
+            "database_snapshot"
+        ] = {
+            **inventory,
+
+            "generation_mode":
+                mode,
+
+            "by_model":
+                inserted_counts,
+
+            "validators":
+                self.validator_stats,
+        }
+
+        self.state.data[
+            "totals"
+        ][
+            "database_total"
+        ] = database_total
+
+        self.state.data[
+            "totals"
+        ][
+            "database_represented_total"
+        ] = represented_total
+
+        self.state.data[
+            "totals"
+        ][
+            "database_unclassified"
+        ] = unclassified
+
+        self.state.save()
+
+        # --------------------------------------------------------------
+        # Overall summary.
+        # --------------------------------------------------------------
 
         totals = (
             self.state.data.get(
@@ -7689,7 +9395,7 @@ class QuestionGenerator:
 
         print(
             "\n"
-            + "=" * 84
+            + "=" * 120
         )
 
         print(
@@ -7697,55 +9403,59 @@ class QuestionGenerator:
         )
 
         print(
-            "=" * 84
+            "=" * 120
         )
 
         print(
-            (
-                f"Requests:     "
-                f"{int(totals.get('requests', 0))}"
-            )
+            f"Requests:              "
+            f"{int(totals.get('requests', 0))}"
         )
 
         print(
-            (
-                f"Generated:    "
-                f"{int(totals.get('generated', 0))}"
-            )
+            f"Generated:             "
+            f"{int(totals.get('generated', 0))}"
         )
 
         print(
-            (
-                f"Tracked Inserted: "
-                f"{int(totals.get('inserted', 0))}"
-            )
+            f"Tracked Inserted:      "
+            f"{int(totals.get('inserted', 0))}"
         )
 
         print(
-            (
-                f"Rejected:     "
-                f"{int(totals.get('rejected', 0))}"
-            )
+            f"Rejected:              "
+            f"{int(totals.get('rejected', 0))}"
         )
 
         print(
-            (
-                f"Duplicates:   "
-                f"{int(totals.get('duplicates', 0))}"
-            )
+            f"Duplicates:            "
+            f"{int(totals.get('duplicates', 0))}"
         )
 
-        if database_total >= 0:
-
-            print(
-                (
-                    f"DB Total:     "
-                    f"{database_total}"
-                )
-            )
+        print(
+            f"DB Grand Total:        "
+            f"{database_total}"
+        )
 
         print(
-            "\nMODEL STATUS"
+            f"Curriculum Total:      "
+            f"{represented_total}"
+        )
+
+        print(
+            f"Unclassified DB rows:  "
+            f"{unclassified}"
+        )
+
+        # --------------------------------------------------------------
+        # Generation model database counts.
+        # --------------------------------------------------------------
+
+        print(
+            "\nGENERATION MODEL DB COUNTS"
+        )
+
+        print(
+            "-" * 120
         )
 
         for spec in MODEL_HIERARCHY:
@@ -7755,10 +9465,6 @@ class QuestionGenerator:
                     spec.key
                 ]
             )
-
-            # ----------------------------------------------------------
-            # ACTUAL DB INSERTION COUNT
-            # ----------------------------------------------------------
 
             actual_inserted = (
                 inserted_counts.get(
@@ -7778,13 +9484,115 @@ class QuestionGenerator:
                     f"TPD "
                     f"{runtime.daily_tokens}/"
                     f"{spec.tpd or 'n/a'} | "
-                    f"inserted="
+                    f"DB inserted="
                     f"{actual_inserted}"
                 )
             )
 
+        # --------------------------------------------------------------
+        # Validator statistics.
+        # --------------------------------------------------------------
+
         print(
-            "=" * 84
+            "\nVALIDATOR STATUS"
+        )
+
+        print(
+            "-" * 120
+        )
+
+        for validator_model in VALIDATOR_MODELS:
+                
+            stats = (
+                self.state.data
+                .get(
+                    "validators",
+                    {}
+                )
+                .get(
+                    validator_model,
+                    {
+                        "batches": 0,
+                        "validated_questions": 0,
+                        "approved": 0,
+                        "repaired": 0,
+                        "rejected": 0,
+                        "errors": 0,
+                    },
+                )
+            )
+        
+            print(
+                (
+                    f"{validator_model:32s} | "
+                    f"batches="
+                    f"{stats['batches']:<4} | "
+                    f"validated="
+                    f"{stats['validated_questions']:<5} | "
+                    f"approved="
+                    f"{stats['approved']:<5} | "
+                    f"repaired="
+                    f"{stats['repaired']:<5} | "
+                    f"rejected="
+                    f"{stats['rejected']:<5} | "
+                    f"errors="
+                    f"{stats['errors']}"
+                )
+            )
+
+        # --------------------------------------------------------------
+        # Complete curriculum inventory.
+        # --------------------------------------------------------------
+
+        print(
+            "\nDATABASE QUESTION INVENTORY"
+        )
+
+        print(
+            "-" * 120
+        )
+
+        print(
+            (
+                f"{'Grade':12s} | "
+                f"{'Subject':14s} | "
+                f"{'Sub-topic':52s} | "
+                f"{'Difficulty':10s} | "
+                f"{'Questions':9s}"
+            )
+        )
+
+        print(
+            "-" * 120
+        )
+
+        for row in inventory[
+            "combinations"
+        ]:
+
+            print(
+                (
+                    f"{row['grade']:12s} | "
+                    f"{row['subject']:14s} | "
+                    f"{row['syllabus_topic']:52s} | "
+                    f"{row['difficulty']:10s} | "
+                    f"{row['question_count']:9d}"
+                )
+            )
+
+        print(
+            "-" * 120
+        )
+
+        print(
+            (
+                f"{'GRAND TOTAL':92s} | "
+                f"{database_total:9d}"
+            )
+        )
+
+        print(
+            "=" * 120
         )
 
 
