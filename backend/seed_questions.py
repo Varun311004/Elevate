@@ -222,7 +222,13 @@ SUPPORTED_DIFFICULTIES = (
 #
 # The structure is:
 #
-# GRADE -> SUBJECT -> DIFFICULTY -> SUB-TOPICS
+# GRADE -> SUBJECT -> TOPICS -> DIFFICULTY
+#
+# Every Grade + Subject exposes the complete union of its syllabus topics.
+# Every topic is independently generated at:
+#     easy
+#     medium
+#     hard
 #
 # This replaces the previous subject-only syllabus mapping.
 # ============================================================================
@@ -881,6 +887,21 @@ def build_all_combinations(
 ) -> List[
     Dict[str, str]
 ]:
+    """
+    Build every Grade + Subject + Topic + Difficulty combination.
+
+    Difficulty is NOT an ownership constraint on syllabus topics.
+
+    All existing topic names from the three historical difficulty
+    lists are combined into the syllabus pool for that Grade + Subject.
+
+    Each resulting topic is then available at:
+        easy
+        medium
+        hard
+
+    Existing topic names are never renamed.
+    """
 
     combinations: List[
         Dict[str, str]
@@ -890,18 +911,49 @@ def build_all_combinations(
 
         for subject in SUPPORTED_SUBJECTS:
 
-            for difficulty in (
-                SUPPORTED_DIFFICULTIES
-            ):
+            subject_data = (
+                syllabus
+                .get(
+                    grade,
+                    {},
+                )
+                .get(
+                    subject,
+                    {},
+                )
+            )
 
-                topics = (
-                    syllabus
-                    [grade]
-                    [subject]
-                    [difficulty]
+            # Preserve every existing topic name while removing only
+            # duplicate occurrences of the exact same topic string.
+            all_topics = list(
+                dict.fromkeys(
+                    str(topic).strip()
+                    for difficulty in (
+                        SUPPORTED_DIFFICULTIES
+                    )
+                    for topic in (
+                        subject_data.get(
+                            difficulty,
+                            [],
+                        )
+                    )
+                    if str(topic).strip()
+                )
+            )
+
+            if not all_topics:
+                raise RuntimeError(
+                    (
+                        f"Invalid curriculum: "
+                        f"{grade} -> {subject} has no syllabus topics."
+                    )
                 )
 
-                for topic in topics:
+            for topic in all_topics:
+
+                for difficulty in (
+                    SUPPORTED_DIFFICULTIES
+                ):
 
                     combinations.append(
                         {
@@ -930,13 +982,21 @@ def build_demo_combinations(
 ) -> List[
     Dict[str, str]
 ]:
-
     """
     Deterministic demo targets.
 
-    This keeps the existing one-target-per-model demo behavior,
-    but now selects from the correct grade + subject + difficulty
-    curriculum pool.
+    Demo targets use the same curriculum model as production:
+
+        Grade
+          -> Subject
+              -> 24 unique topics
+                  -> easy
+                  -> medium
+                  -> hard
+
+    The demo still generates exactly one target per model,
+    but the selected topic is no longer owned by a single
+    difficulty tier.
     """
 
     combinations: List[
@@ -945,10 +1005,7 @@ def build_demo_combinations(
 
     index = 0
 
-    while (
-        len(combinations)
-        < count
-    ):
+    while len(combinations) < count:
 
         grade = (
             SUPPORTED_GRADES[
@@ -968,6 +1025,34 @@ def build_demo_combinations(
             ]
         )
 
+        subject_data = (
+            syllabus
+            .get(
+                grade,
+                {},
+            )
+            .get(
+                subject,
+                {},
+            )
+        )
+
+        all_topics = [
+            *dict.fromkeys(
+                str(topic).strip()
+                for difficulty in (
+                    SUPPORTED_DIFFICULTIES
+                )
+                for topic in (
+                    subject_data.get(
+                        difficulty,
+                        []
+                    )
+                )
+                if str(topic).strip()
+            )
+        ]
+
         difficulty = (
             SUPPORTED_DIFFICULTIES[
                 index
@@ -977,21 +1062,14 @@ def build_demo_combinations(
             ]
         )
 
-        topics = (
-            syllabus
-            [grade]
-            [subject]
-            [difficulty]
-        )
-
-        topic = topics[
+        topic = all_topics[
             (
                 index
                 // len(
                     SUPPORTED_DIFFICULTIES
                 )
             )
-            % len(topics)
+            % len(all_topics)
         ]
 
         combinations.append(
@@ -9543,6 +9621,77 @@ class QuestionGenerator:
         # --------------------------------------------------------------
         # Complete curriculum inventory.
         # --------------------------------------------------------------
+
+        expected_curriculum_cells = (
+            len(SUPPORTED_GRADES)
+            * len(SUPPORTED_SUBJECTS)
+            * 24
+            * len(SUPPORTED_DIFFICULTIES)
+        )
+
+        actual_curriculum_cells = len(
+            inventory[
+                "combinations"
+            ]
+        )
+
+        print(
+            "\nCURRICULUM MATRIX"
+        )
+        
+        print(
+            "-" * 120
+        )
+        
+        print(
+            (
+                f"Grades:              "
+                f"{len(SUPPORTED_GRADES)}"
+            )
+        )
+        
+        print(
+            (
+                f"Subjects:            "
+                f"{len(SUPPORTED_SUBJECTS)}"
+            )
+        )
+        
+        print(
+            (
+                f"Difficulties:        "
+                f"{len(SUPPORTED_DIFFICULTIES)}"
+            )
+        )
+        
+        curriculum_cells = build_all_combinations(
+            self.syllabus
+        )
+        
+        print(
+            (
+                f"Generated curriculum cells: "
+                f"{len(curriculum_cells)}"
+            )
+        )
+        
+        print(
+            (
+                "Structure:            "
+                "Grade → Subject → Topic → Difficulty"
+            )
+        )
+        
+        print(
+            (
+                "Topic ownership:      "
+                "independent of difficulty"
+            )
+        )
+        
+        print(
+            "-" * 120
+        )
 
         print(
             "\nDATABASE QUESTION INVENTORY"

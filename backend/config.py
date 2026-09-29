@@ -38,7 +38,7 @@ def _build_supabase_direct_url(project_url: str) -> str | None:
     database = _first_non_empty_env("SUPABASE_DB_NAME") or "postgres"
     port = _coerce_int(_first_non_empty_env("SUPABASE_DB_PORT"), 5432)
     encoded_password = quote(password, safe="")
-    return f"postgresql://{user}:{encoded_password}@db.{project_ref}.supabase.co:{port}/{database}"
+    return f"postgresql+psycopg2://{user}:{encoded_password}@db.{project_ref}.supabase.co:{port}/{database}"
 
 
 def normalize_database_url(raw_value: str | None) -> str:
@@ -46,13 +46,33 @@ def normalize_database_url(raw_value: str | None) -> str:
     # This provides a direct path for production and preview environments, bypassing
     # complex normalization logic that might fail in containerized/serverless runtimes.
     pooler_url = _first_non_empty_env("SUPABASE_POOLER_CONNECTION_STRING")
+
     if pooler_url:
         if pooler_url.startswith("postgres://"):
-            return pooler_url.replace("postgres://", "postgresql://", 1)
+            pooler_url = pooler_url.replace("postgres://", "postgresql://", 1)
+
         if pooler_url.startswith("postgresql://"):
-            return pooler_url
+            pooler_url = "postgresql+psycopg2://" + pooler_url[len("postgresql://"):]
+
+            parts = urlsplit(pooler_url)
+            query = dict(parse_qsl(parts.query, keep_blank_values=True))
+
+            if "sslmode" not in query:
+                query["sslmode"] = "require"
+
+            return urlunsplit(
+                (
+                    parts.scheme,
+                    parts.netloc,
+                    parts.path,
+                    urlencode(query),
+                    parts.fragment,
+                )
+            )
+
         raise ValueError(
-            "Invalid SUPABASE_POOLER_CONNECTION_STRING: Must start with 'postgresql://' or 'postgres://'"
+            "Invalid SUPABASE_POOLER_CONNECTION_STRING: "
+            "Must start with 'postgresql://' or 'postgres://'"
         )
 
     value = (raw_value or "").strip()
@@ -100,7 +120,7 @@ def normalize_database_url(raw_value: str | None) -> str:
 
         value = urlunsplit(
             (
-                parts.scheme,
+                "postgresql+psycopg2",
                 parts.netloc,
                 parts.path,
                 urlencode(query),
@@ -108,9 +128,14 @@ def normalize_database_url(raw_value: str | None) -> str:
             )
         )
 
-    if not (value.startswith("postgresql://") or value.startswith("sqlite://")):
+    if not (
+        value.startswith("postgresql+psycopg2://")
+        or value.startswith("postgresql://")
+        or value.startswith("sqlite://")
+    ):
         raise ValueError(
-            "Unsupported DATABASE_URL scheme. Supported: postgresql://, postgres://, sqlite://"
+            "Unsupported DATABASE_URL scheme. Supported: "
+            "postgresql+psycopg2://, postgresql://, postgres://, sqlite://"
         )
 
     return value

@@ -538,21 +538,23 @@ export function getCurriculumTopics(
     return [];
   }
 
-  if (
-    difficulty
-    && difficulty !== "adaptive"
-    && subjectData[difficulty]
-  ) {
-    return [
-      ...subjectData[difficulty]
-    ];
-  }
-
+  /*
+   * Difficulty is NOT a syllabus-topic filter.
+   *
+   * The syllabus for a Grade + Subject is the complete set of
+   * existing topics across the three historical difficulty lists.
+   *
+   * Difficulty is selected separately in the Learning UI.
+   *
+   * We preserve the existing topic names exactly as defined in
+   * STEM_CURRICULUM and only remove duplicate display entries.
+   */
   return [
     ...new Set(
-      Object.values(
-        subjectData
-      ).flat()
+      Object.values(subjectData)
+        .flat()
+        .map(topic => String(topic || '').trim())
+        .filter(Boolean)
     )
   ];
 }
